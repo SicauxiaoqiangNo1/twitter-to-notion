@@ -60,16 +60,17 @@
 
 ## 📁 项目结构
 
+```
 twitter-to-notion-extension/
-├── manifest.json # 扩展配置文件
-├── background.js # 后台脚本
-├── content.js # 内容脚本
-├── popup.html # 弹出窗口界面
-├── popup.js # 弹出窗口逻辑
-├── icons/ # 扩展图标
-├── README.md # 说明文档
-└── .gitignore # Git忽略配置
-
+├── manifest.json # Extension configuration
+├── background.js # Background script
+├── content.js # Content script
+├── popup.html # Popup interface
+├── popup.js # Popup logic
+├── icons/ # Extension icons
+├── README.md # Documentation
+└── .gitignore # Git ignore file
+```
 ---
 
 ## 📄 开源协议
@@ -89,3 +90,4 @@ MIT License - 可自由使用、修改和分发
 
 
 欢迎提交 Issue 和 Pull Request！
+
