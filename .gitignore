@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Chrome Extension
+*.pem
+*.zip
+*.crx
+
+# Optional: if you use npm
+node_modules/
