@@ -1,6 +1,6 @@
 # 🐦 Twitter to Notion
 
- [中文](README_CN.md)|**English** 
+ [English](README.md)|**中文** 
 
 一键将 Twitter 推文、图片和引用内容保存到 Notion 的 Chrome 扩展。
 
