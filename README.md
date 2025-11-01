@@ -54,7 +54,7 @@ A Chrome extension to save Twitter tweets, images, and quoted content directly t
 
 | Configuration | Save Button | Notion Result |
 |---------------|-------------|---------------|
-| ![config](screenshots/config.png) | ![save](screenshots/save-button.png) | ![result](C:\Users\Stark\Desktop\X2Notion\README.assets\notion-result-1761999665016-7.png) |
+| ![config](screenshots/config.png) | ![save](screenshots/save-button.png) | ![result](screenshots/notion-result.png) |
 ---
 
 ## 📁 Project Structure

@@ -54,7 +54,7 @@
 
 | 配置界面                          | 保存按钮                             | Notion 效果                                                  |
 | --------------------------------- | ------------------------------------ | ------------------------------------------------------------ |
-| ![config](screenshots/config.png) | ![save](screenshots/save-button.png) | ![result](C:\Users\Stark\Desktop\X2Notion\README.assets\notion-result-1761999665016-7.png) |
+| ![config](screenshots/config.png) | ![save](screenshots/save-button.png) | ![result](C:\Users\Stark\Desktop\X2Notion\README_CN.assets\notion-result.png) |
 
 ---
 
