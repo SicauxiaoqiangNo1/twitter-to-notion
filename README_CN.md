@@ -54,7 +54,7 @@
 
 | 配置界面                          | 保存按钮                             | Notion 效果                                                  |
 | --------------------------------- | ------------------------------------ | ------------------------------------------------------------ |
-| ![config](screenshots/config.png) | ![save](screenshots/save-button.png) | ![result](C:\Users\Stark\Desktop\X2Notion\README_CN.assets\notion-result.png) |
+| ![config](screenshots/config.png) | ![save](screenshots/save-button.png) | ![result](screenshots/notion-result.png) |
 
 ---
 
@@ -86,5 +86,6 @@ MIT License - 可自由使用、修改和分发
 ---
 
 ## 🤝 贡献与反馈
+
 
 欢迎提交 Issue 和 Pull Request！
