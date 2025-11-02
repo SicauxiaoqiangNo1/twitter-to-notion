@@ -1,3 +1,11 @@
+<!--
+ * @Author: stark sicauva3@gmail.com
+ * @Date: 2025-11-01 21:40:00
+ * @LastEditors: stark sicauva3@gmail.com
+ * @LastEditTime: 2025-11-02 22:10:57
+ * @FilePath: \X2Notion\README_CN.md
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+-->
 # 🐦 Twitter to Notion
 
  [English](README.md)|**中文** 
@@ -14,6 +22,7 @@
 - 📊 **数据统计** - 自动记录点赞、转推、评论数量
 - 🕒 **时间标记** - 记录推文发布时间和保存时间
 - 📝 **内容完整** - 长文本自动分块，确保内容不丢失
+- ✅ **配置状态** - 实时显示配置有效性，支持点击验证
 
 ---
 
@@ -47,6 +56,20 @@
 - 格式：`secret_xxxxxxxxxxxxxxxxxxxxxxxx`
 
 📚 完整配置教程：[Notion API 入门指南](https://developers.notion.com/docs/getting-started)
+
+### 🔧 配置状态栏功能
+
+扩展现在提供了智能的配置状态显示：
+
+- **✅ 绿色状态**：配置正确且有效
+- **❌ 红色状态**：配置错误或无效
+- **点击验证**：点击状态栏可重新验证配置有效性
+
+**状态说明**：
+- 绿色✅：API Key 和 Database ID 正确，可以正常保存推文
+- 红色❌：配置存在问题，需要检查 API Key 权限或 Database ID 是否正确
+
+这个功能帮助你快速确认配置是否有效，避免保存失败。
 
 ---
 
