@@ -235,7 +235,13 @@ async function saveToNotion(tweet, apiKey, databaseId) {
 
     const result = await response.json();
     console.log("✅ Successfully saved to Notion");
-    return result;
+    
+    // 构造页面 URL
+    const pageUrl = `https://notion.so/${result.id.replace(/-/g, '')}`;
+    return {
+      ...result,
+      pageUrl: pageUrl
+    };
     
   } catch (error) {
     console.error("❌ Error saving to Notion:", error);
