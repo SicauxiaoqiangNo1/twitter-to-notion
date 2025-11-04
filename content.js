@@ -73,11 +73,26 @@ function extractTweetData(tweetElement = null) {
 
 // 提取内容和媒体（保持相对位置）
 function extractContentWithMedia(tweetElement) {
-    const contentContainer = tweetElement.querySelector('[data-testid="tweetText"]')?.parentElement;
+    console.log('开始提取内容和媒体');
+    
+    // 查找推文内容容器 - 尝试多种选择器
+    let contentContainer = tweetElement.querySelector('[data-testid="tweetText"]')?.parentElement;
+    
+    // 如果找不到，尝试其他可能的内容容器
     if (!contentContainer) {
-        console.log('No content container found');
-        return { text: '', blocks: [] };
+        contentContainer = tweetElement.querySelector('[data-testid="tweet"]') ||
+                          tweetElement.querySelector('article[data-testid="tweet"] div');
     }
+    
+    if (!contentContainer) {
+        console.log('No content container found, using tweet element directly');
+        contentContainer = tweetElement;
+    }
+    
+    console.log('找到的内容容器:', {
+        element: !!contentContainer,
+        selector: contentContainer ? contentContainer.tagName + (contentContainer.className ? '.' + contentContainer.className.split(' ')[0] : '') : 'none'
+    });
 
     const blocks = [];
     let fullText = '';
@@ -85,18 +100,41 @@ function extractContentWithMedia(tweetElement) {
     // 首先检查并处理引用推文
     const quotedTweetUrl = extractQuotedTweetUrl(tweetElement);
     
-    // 使用 TreeWalker 遍历所有节点，保持原始顺序
+    // 使用 TreeWalker 遍历推文内容区域，避免抓取头像等无关内容
     const walker = document.createTreeWalker(
         contentContainer,
         NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
         {
             acceptNode: function(node) {
-                // 跳过引用推文容器的内容（我们单独处理）
+                // 跳过引用推文容器的内容
                 if (node.nodeType === Node.ELEMENT_NODE) {
-                    const isQuoteTweet = node.closest('[data-testid="quote"]') || 
-                                       (node.closest('article[data-testid="tweet"]') && 
+                    const isQuoteTweet = node.closest('[data-testid="quote"]') ||
+                                       (node.closest('article[data-testid="tweet"]') &&
                                         node.closest('article[data-testid="tweet"]') !== contentContainer.closest('article[data-testid="tweet"]'));
                     if (isQuoteTweet) {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                    
+                    // 跳过用户信息区域（头像、用户名等）
+                    const isUserInfo = node.closest('[data-testid="User-Name"]') ||
+                                     node.closest('[data-testid="UserAvatar-Container"]') ||
+                                     node.closest('[class*="avatar"]') ||
+                                     node.closest('[class*="Avatar"]');
+                    if (isUserInfo) {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                    
+                    // 跳过操作按钮区域（订阅、关注等）
+                    const isActionButton = node.closest('[data-testid="follow"]') ||
+                                         node.closest('[data-testid="subscribe"]') ||
+                                         node.closest('[class*="follow"]') ||
+                                         node.closest('[class*="subscribe"]') ||
+                                         node.closest('[class*="button"]') &&
+                                         (node.textContent.includes('关注') ||
+                                          node.textContent.includes('Follow') ||
+                                          node.textContent.includes('订阅') ||
+                                          node.textContent.includes('Subscribe'));
+                    if (isActionButton) {
                         return NodeFilter.FILTER_REJECT;
                     }
                 }
@@ -113,6 +151,14 @@ function extractContentWithMedia(tweetElement) {
         if (currentTextBlock.length > 0) {
             const textContent = currentTextBlock.map(item => item.text).join('');
             if (textContent.trim()) {
+                console.log('📦 输出文本块:', {
+                    content: textContent,
+                    items: currentTextBlock.map(item => ({
+                        text: item.text,
+                        hasLink: !!item.link,
+                        linkUrl: item.link?.url
+                    }))
+                });
                 blocks.push({
                     type: 'text',
                     content: textContent,
@@ -126,6 +172,16 @@ function extractContentWithMedia(tweetElement) {
 
     while (currentNode = walker.nextNode()) {
         if (currentNode.nodeType === Node.TEXT_NODE) {
+            // 检查这个文本节点是否在链接元素内，如果是则跳过，因为链接会在元素处理时单独处理
+            const parentLink = currentNode.parentElement?.closest('a');
+            if (parentLink && parentLink.href) {
+                console.log('📝 跳过链接内的文本节点，将在链接元素中处理:', {
+                    text: currentNode.textContent?.substring(0, 50),
+                    parentLinkHref: parentLink.href
+                });
+                continue;
+            }
+            
             const text = currentNode.textContent;
             if (text && text.trim()) {
                 // 获取文本的样式信息
@@ -147,27 +203,119 @@ function extractContentWithMedia(tweetElement) {
             if (tagName === 'a' && currentNode.href) {
                 const linkText = currentNode.textContent?.trim();
                 if (linkText) {
-                    currentTextBlock.push({
-                        text: linkText,
-                        annotations: { bold: false, italic: false },
-                        link: { url: currentNode.href }
-                    });
+                    // 检查是否已经处理过相同文本和URL的链接，避免重复
+                    const isDuplicateLink = currentTextBlock.some(item =>
+                        item.text === linkText && item.link?.url === currentNode.href
+                    );
+                    
+                    if (!isDuplicateLink) {
+                        console.log('🔗 处理链接:', {
+                            text: linkText,
+                            href: currentNode.href,
+                            currentTextBlockLength: currentTextBlock.length,
+                            isDuplicate: false
+                        });
+                        currentTextBlock.push({
+                            text: linkText,
+                            annotations: { bold: false, italic: false },
+                            link: { url: currentNode.href }
+                        });
+                    } else {
+                        console.log('🔗 跳过重复链接:', {
+                            text: linkText,
+                            href: currentNode.href,
+                            isDuplicate: true
+                        });
+                    }
                 }
                 continue;
             }
             
             // 处理图片 - 遇到图片时先输出之前的文本
-            if (tagName === 'img' && 
-                (currentNode.getAttribute('data-testid') === 'tweetPhoto' || 
-                 currentNode.src.includes('pbs.twimg.com'))) {
+            if (tagName === 'img') {
+                // 检查图片是否在引用推文中
+                const isInQuoteTweet = currentNode.closest('[data-testid="quote"]') ||
+                                      (currentNode.closest('article[data-testid="tweet"]') &&
+                                       currentNode.closest('article[data-testid="tweet"]') !== contentContainer.closest('article[data-testid="tweet"]'));
                 
-                flushTextBlock();
-                
-                blocks.push({
-                    type: 'image',
-                    url: currentNode.src,
-                    alt: currentNode.alt || ''
+                // 调试信息：显示图片位置检测详情
+                console.log('📍 图片位置检测详情:', {
+                    src: currentNode.src,
+                    isInQuoteTweet: isInQuoteTweet,
+                    closestQuote: !!currentNode.closest('[data-testid="quote"]'),
+                    closestArticle: !!currentNode.closest('article[data-testid="tweet"]'),
+                    contentContainerArticle: !!contentContainer.closest('article[data-testid="tweet"]'),
+                    sameArticle: currentNode.closest('article[data-testid="tweet"]') === contentContainer.closest('article[data-testid="tweet"]')
                 });
+                
+                if (isInQuoteTweet) {
+                    console.log('❌ 跳过引用推文中的图片:', currentNode.src);
+                    continue;
+                }
+                
+                console.log('发现图片元素:', {
+                    src: currentNode.src,
+                    dataTestid: currentNode.getAttribute('data-testid'),
+                    alt: currentNode.alt,
+                    className: currentNode.className,
+                    isInQuoteTweet: isInQuoteTweet
+                });
+                
+                // 首先检查是否是emoji图片
+                const isEmojiImage = isEmojiImg(currentNode);
+                if (isEmojiImage) {
+                    console.log('✅ 检测到emoji图片，转换为文本:', currentNode.alt);
+                    // emoji图片直接作为文本处理，不创建图片块
+                    currentTextBlock.push({
+                        text: currentNode.alt || '',
+                        annotations: { bold: false, italic: false }
+                    });
+                    continue;
+                }
+                
+                // 扩展图片检测条件 - 只抓取推文内容图片
+                const isTweetPhoto = currentNode.getAttribute('data-testid') === 'tweetPhoto';
+                const isTwitterImage = currentNode.src.includes('pbs.twimg.com') &&
+                                      !currentNode.src.includes('profile_images'); // 排除头像
+                const hasImageClass = currentNode.className && (
+                    currentNode.className.includes('image') ||
+                    currentNode.className.includes('media')
+                ) && !currentNode.className.includes('avatar'); // 排除头像
+                
+                // 新增条件：检查图片是否在推文内容区域内
+                const isInContentArea = contentContainer.contains(currentNode);
+                
+                // 调试信息：显示图片检测详情
+                console.log('🔍 图片检测详情:', {
+                    src: currentNode.src,
+                    dataTestid: currentNode.getAttribute('data-testid'),
+                    className: currentNode.className,
+                    alt: currentNode.alt,
+                    isTweetPhoto: isTweetPhoto,
+                    isTwitterImage: isTwitterImage,
+                    hasImageClass: hasImageClass,
+                    isInContentArea: isInContentArea,
+                    finalDecision: isTweetPhoto || isTwitterImage || hasImageClass
+                });
+                
+                // 放宽图片检测条件：只要在内容区域内且是Twitter图片，就认为是推文图片
+                if ((isTweetPhoto || isTwitterImage || hasImageClass) && isInContentArea) {
+                    console.log('✅ 检测到推文图片（位置正确）:', currentNode.src);
+                    flushTextBlock();
+                    
+                    blocks.push({
+                        type: 'image',
+                        url: currentNode.src,
+                        alt: currentNode.alt || ''
+                    });
+                } else {
+                    console.log('❌ 跳过非推文图片（可能是头像）:', {
+                        src: currentNode.src,
+                        reason: !isInContentArea ? '不在内容区域' :
+                               !isTwitterImage ? '不是Twitter图片' :
+                               '其他过滤条件'
+                    });
+                }
             }
             
             // 处理视频
@@ -209,7 +357,57 @@ function extractContentWithMedia(tweetElement) {
         });
     }
 
+    // 备用图片检测：如果TreeWalker没有找到图片，直接在整个推文元素中查找
+    const imageBlocksCount = blocks.filter(b => b.type === 'image').length;
+    if (imageBlocksCount === 0) {
+        console.log('🔍 TreeWalker未找到图片，启用备用图片检测');
+        const allImages = tweetElement.querySelectorAll('img');
+        console.log('📸 备用检测找到的图片数量:', allImages.length);
+        
+        allImages.forEach((img, index) => {
+            // 检查图片是否在引用推文中
+            const isInQuoteTweet = img.closest('[data-testid="quote"]') ||
+                                  (img.closest('article[data-testid="tweet"]') &&
+                                   img.closest('article[data-testid="tweet"]') !== tweetElement);
+            
+            if (isInQuoteTweet) {
+                console.log(`❌ 备用检测跳过引用推文图片 ${index}:`, img.src);
+                return;
+            }
+            
+            // 检查是否是emoji图片
+            if (isEmojiImg(img)) {
+                console.log(`✅ 备用检测识别为emoji图片 ${index}:`, img.alt);
+                return;
+            }
+            
+            // 检查是否是推文图片
+            const isTwitterImage = img.src.includes('pbs.twimg.com') &&
+                                  !img.src.includes('profile_images');
+            
+            if (isTwitterImage) {
+                console.log(`✅ 备用检测找到推文图片 ${index}:`, img.src);
+                blocks.push({
+                    type: 'image',
+                    url: img.src,
+                    alt: img.alt || ''
+                });
+            } else {
+                console.log(`❌ 备用检测跳过非推文图片 ${index}:`, img.src);
+            }
+        });
+    }
+
     console.log('提取的内容块:', blocks);
+    console.log('📊 内容块统计:', {
+        totalBlocks: blocks.length,
+        textBlocks: blocks.filter(b => b.type === 'text').length,
+        imageBlocks: blocks.filter(b => b.type === 'image').length,
+        videoBlocks: blocks.filter(b => b.type === 'video').length,
+        quotedTweetBlocks: blocks.filter(b => b.type === 'quoted_tweet').length,
+        fullTextLength: fullText.length,
+        fullTextPreview: fullText.substring(0, 100) + (fullText.length > 100 ? '...' : '')
+    });
     return {
         text: fullText.trim(),
         blocks: blocks
@@ -220,16 +418,31 @@ function extractContentWithMedia(tweetElement) {
 
 function extractQuotedTweetUrl(tweetElement) {
   try {
+    // 获取当前推文的 status ID（用于排除自身）
+    const currentUrl = window.location.href;
+    const currentStatusMatch = currentUrl.match(/\/status\/(\d+)/);
+    const currentStatusId = currentStatusMatch ? currentStatusMatch[1] : null;
+
     // 查找推文文本中所有 /status/ 链接
     const statusLinks = Array.from(tweetElement.querySelectorAll('a[href*="/status/"]'));
+
     for (const link of statusLinks) {
       const href = link.getAttribute('href');
-      if (href && /^\/\w+\/status\/\d+$/.test(href)) {
+      const match = href?.match(/^\/\w+\/status\/(\d+)$/);
+      if (match) {
+        const statusId = match[1];
+        // ✅ 排除当前推文自身的链接
+        if (statusId === currentStatusId) {
+          console.log('跳过当前推文自身的链接:', href);
+          continue;
+        }
+
         const fullUrl = new URL(href, 'https://twitter.com').href;
         console.log('提取到引用推文链接：', fullUrl);
         return fullUrl;
       }
     }
+
     return null;
   } catch (error) {
     console.error('提取引用推文URL出错:', error);
@@ -237,6 +450,71 @@ function extractQuotedTweetUrl(tweetElement) {
   }
 }
 
+
+// 检查是否是emoji图片
+function isEmojiImg(imgElement) {
+    if (!imgElement) return false;
+    
+    const src = imgElement.src || '';
+    const alt = imgElement.alt || '';
+    const className = imgElement.className || '';
+    
+    // 条件1: src包含emoji域名（最可靠的判断）
+    const hasEmojiDomain = src.includes('twimg.com/emoji') ||
+                          src.includes('abs-0.twimg.com/emoji') ||
+                          src.includes('abs-1.twimg.com/emoji') ||
+                          src.includes('abs-2.twimg.com/emoji');
+    
+    // 条件2: alt是短字符且不是描述性文本
+    const isShortAlt = alt.length <= 3 && alt.length > 0;
+    const isDescriptiveAlt = alt.includes(' ') || alt.length > 10; // 排除描述性alt
+    
+    // 条件3: alt是emoji字符（Unicode范围检查）
+    const isEmojiChar = alt.length >= 1 && alt.length <= 3 &&
+                       Array.from(alt).every(char => {
+                           const code = char.codePointAt(0);
+                           // 常见emoji Unicode范围
+                           return (code >= 0x1F600 && code <= 0x1F64F) || // 表情符号
+                                  (code >= 0x1F300 && code <= 0x1F5FF) || // 杂项符号和象形文字
+                                  (code >= 0x1F680 && code <= 0x1F6FF) || // 交通和地图符号
+                                  (code >= 0x2600 && code <= 0x26FF) ||   // 杂项符号
+                                  (code >= 0x2700 && code <= 0x27BF) ||   // 装饰符号
+                                  (code >= 0x1F900 && code <= 0x1F9FF) || // 补充符号和象形文字
+                                  (code >= 0x1F1E6 && code <= 0x1F1FF);   // 区域指示符号
+                       });
+    
+    // 条件4: 检查常见的emoji类名
+    const hasEmojiClass = className.includes('emoji') ||
+                         className.includes('r-4qtqp9') ||
+                         className.includes('r-dflpy8') ||
+                         className.includes('r-1kqtdi0') ||
+                         className.includes('r-1sp51qo');
+    
+    // 条件5: 检查图片尺寸（emoji通常较小）
+    const width = imgElement.width || imgElement.getAttribute('width');
+    const height = imgElement.height || imgElement.getAttribute('height');
+    const isSmallSize = (width && width <= 24) || (height && height <= 24);
+    
+    // 主要判断逻辑：有emoji域名 或者 (短字符+emoji类名) 或者 (emoji字符)
+    const isEmoji = hasEmojiDomain ||
+                   (isShortAlt && hasEmojiClass && !isDescriptiveAlt) ||
+                   isEmojiChar;
+    
+    if (isEmoji) {
+        console.log('🔍 识别为emoji图片:', {
+            src: src.substring(0, 50) + '...',
+            alt,
+            className: className.substring(0, 30) + '...',
+            hasEmojiDomain,
+            isShortAlt,
+            isEmojiChar,
+            hasEmojiClass,
+            isSmallSize
+        });
+    }
+    
+    return isEmoji;
+}
 
 // 改进的加粗检测函数
 function isElementBold(element) {
@@ -347,6 +625,13 @@ async function handleSaveButtonClick(tweetElement, button) {
         button.disabled = true;
         
         const tweetData = extractTweetData(tweetElement);
+        console.log('📊 保存前的推文数据:', {
+            hasContentBlocks: !!tweetData?.contentBlocks,
+            contentBlocksCount: tweetData?.contentBlocks?.length,
+            imageBlocks: tweetData?.contentBlocks?.filter(b => b.type === 'image').length,
+            imageUrls: tweetData?.contentBlocks?.filter(b => b.type === 'image').map(b => b.url)
+        });
+        
         if (!tweetData) {
             showButtonFeedback(button, '❌ Failed to extract tweet data', false);
             return;

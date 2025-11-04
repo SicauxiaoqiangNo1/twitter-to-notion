@@ -98,6 +98,7 @@ async function saveToNotion(tweet, apiKey, databaseId) {
         }
       } else if (block.type === 'image') {
         // 添加图片块
+        console.log('✅ 处理图片块:', block.url);
         data.children.push({
           object: "block",
           type: "image",
@@ -221,6 +222,16 @@ async function saveToNotion(tweet, apiKey, databaseId) {
 
   try {
     console.log('Sending request to Notion API...');
+    console.log('📊 最终数据统计:', {
+      totalBlocks: data.children.length,
+      textBlocks: data.children.filter(child => child.type === 'paragraph').length,
+      imageBlocks: data.children.filter(child => child.type === 'image').length,
+      videoBlocks: data.children.filter(child => child.type === 'paragraph' && child.paragraph?.rich_text?.[0]?.text?.content?.includes('📹 视频')).length,
+      quotedTweetBlocks: data.children.filter(child => child.type === 'embed').length,
+      dividerBlocks: data.children.filter(child => child.type === 'divider').length
+    });
+    console.log('完整的请求数据:', JSON.stringify(data, null, 2));
+    
     const response = await fetch(notionUrl, {
       method: "POST",
       headers: headers,
@@ -251,6 +262,15 @@ async function saveToNotion(tweet, apiKey, databaseId) {
 
 // 从富文本创建段落块
 function createParagraphBlocksFromRichText(richTextArray) {
+  console.log('📝 开始处理富文本数组:', {
+    totalItems: richTextArray.length,
+    items: richTextArray.map(item => ({
+      text: item.text,
+      hasLink: !!item.link,
+      linkUrl: item.link?.url
+    }))
+  });
+  
   const blocks = [];
   let currentParagraph = {
     object: "block",
@@ -261,13 +281,19 @@ function createParagraphBlocksFromRichText(richTextArray) {
   };
 
   richTextArray.forEach((textItem, index) => {
+    console.log(`📝 处理富文本项 ${index}:`, {
+      text: textItem.text,
+      hasLink: !!textItem.link,
+      linkUrl: textItem.link?.url
+    });
+    
     const notionTextItem = {
       type: "text",
-      text: textItem.link ? 
-        { 
+      text: textItem.link ?
+        {
           content: textItem.text,
-          link: textItem.link 
-        } : 
+          link: textItem.link
+        } :
         { content: textItem.text },
       annotations: {
         bold: textItem.annotations.bold || false,
@@ -285,6 +311,9 @@ function createParagraphBlocksFromRichText(richTextArray) {
     
     const newItemLength = textItem.text?.length || 0;
 
+    // 如果当前项是链接，尽量不分割，保持链接完整性
+    const isLinkItem = textItem.link;
+    
     if (currentLength + newItemLength > 1800) {
       // 开始新段落
       if (currentParagraph.paragraph.rich_text.length > 0) {
@@ -300,6 +329,15 @@ function createParagraphBlocksFromRichText(richTextArray) {
     } else {
       // 添加到当前段落
       currentParagraph.paragraph.rich_text.push(notionTextItem);
+    }
+    
+    // 如果是链接项，记录调试信息
+    if (isLinkItem) {
+      console.log('🔗 处理链接项:', {
+        text: textItem.text,
+        url: textItem.link?.url,
+        paragraphLength: currentParagraph.paragraph.rich_text.length
+      });
     }
   });
 
