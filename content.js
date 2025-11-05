@@ -1,4 +1,4 @@
-// content.js - 修复加粗和图片位置问题，添加引用推文嵌入
+// content.js - 完整重构版 (支持 Thread 提取)
 console.log('Twitter to Notion content script loaded');
 
 // 统一的推文数据提取函数
@@ -306,7 +306,7 @@ function extractContentWithMedia(tweetElement) {
                     blocks.push({
                         type: 'image',
                         url: currentNode.src,
-                        alt: currentNode.alt || ''
+                        // alt: currentNode.alt || '' // !! 已移除 !!
                     });
                 } else {
                     console.log('❌ 跳过非推文图片（可能是头像）:', {
@@ -390,7 +390,7 @@ function extractContentWithMedia(tweetElement) {
                 blocks.push({
                     type: 'image',
                     url: img.src,
-                    alt: img.alt || ''
+                    // alt: img.alt || '' // !! 已移除 !!
                 });
             } else {
                 console.log(`❌ 备用检测跳过非推文图片 ${index}:`, img.src);
@@ -415,7 +415,6 @@ function extractContentWithMedia(tweetElement) {
 }
 
 // 替换你原有的 extractQuotedTweetUrl() 函数为以下版本：
-
 function extractQuotedTweetUrl(tweetElement) {
   try {
     // 获取当前推文的 status ID（用于排除自身）
@@ -556,11 +555,118 @@ function isElementBold(element) {
     return false;
 }
 
-// 监听来自popup的消息
+// ==================== Thread 提取逻辑 (新增) ====================
+
+/**
+ * 新增：提取作者 Handle 的辅助函数
+ * @param {Element} tweetElement
+ * @returns {string | null}
+ */
+function extractAuthorHandle(tweetElement) {
+    const authorElement = tweetElement.querySelector('[data-testid="User-Name"]');
+    if (authorElement) {
+        const authorLink = authorElement.querySelector('a[role="link"]');
+        if (authorLink) {
+            return authorLink.getAttribute('href'); // e.g., "/sicauman"
+        }
+    }
+    return null;
+}
+
+/**
+ * 新增：获取当前页面的推文上下文
+ * (轻量级检查，只获取第一条推文数据和 Thread 长度)
+ */
+function getTweetContext() {
+    try {
+        const allTweetElements = document.querySelectorAll('article[data-testid="tweet"]');
+        if (allTweetElements.length === 0) {
+            return null;
+        }
+
+        const mainTweetElement = allTweetElements[0];
+        const mainAuthorHandle = extractAuthorHandle(mainTweetElement);
+        
+        if (!mainAuthorHandle) {
+             // 无法识别作者，可能在非推文页，仅返回单条
+             return {
+                isThread: false,
+                threadLength: 1,
+                mainTweetData: extractTweetData(mainTweetElement)
+             };
+        }
+
+        let threadLength = 0;
+        for (const el of allTweetElements) {
+            if (extractAuthorHandle(el) === mainAuthorHandle) {
+                threadLength++;
+            } else {
+                // 遇到不同作者，停止计数
+                break;
+            }
+        }
+        
+        const mainTweetData = extractTweetData(mainTweetElement);
+        
+        return {
+            isThread: threadLength > 1,
+            threadLength: threadLength,
+            mainTweetData: mainTweetData
+        };
+
+    } catch (error) {
+        console.error('Error getting tweet context:', error);
+        return { isThread: false, threadLength: 1, mainTweetData: extractTweetData() };
+    }
+}
+
+/**
+ * 新增：获取完整的 Thread 数据
+ * (重量级操作，提取所有推文)
+ */
+function getFullThreadData() {
+    const threadTweets = [];
+    const allTweetElements = document.querySelectorAll('article[data-testid="tweet"]');
+    
+    if (allTweetElements.length === 0) return [];
+    
+    const mainAuthorHandle = extractAuthorHandle(allTweetElements[0]);
+    if (!mainAuthorHandle) {
+        // 无作者，只返回第一条
+        const data = extractTweetData(allTweetElements[0]);
+        return data ? [data] : [];
+    }
+
+    for (const tweetElement of allTweetElements) {
+        if (extractAuthorHandle(tweetElement) === mainAuthorHandle) {
+            const tweetData = extractTweetData(tweetElement);
+            if (tweetData) {
+                threadTweets.push(tweetData);
+            }
+        } else {
+            break; // 停止
+        }
+    }
+    return threadTweets;
+}
+
+
+// ==================== 消息与事件处理 ====================
+
+// 修改：原有的消息监听器，增加 Thread 相关 action
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "extractTweetData") {
+        // (此分支保留，用于你页面内的保存按钮)
         const tweetData = extractTweetData();
         sendResponse(tweetData);
+    } else if (request.action === "getTweetContext") {
+        // 新增：Popup 打开时请求上下文
+        const context = getTweetContext();
+        sendResponse(context);
+    } else if (request.action === "getFullThreadData") {
+        // 新增：用户确认保存 Thread 后，请求完整数据
+        const threadData = getFullThreadData();
+        sendResponse(threadData);
     }
     return true;
 });
@@ -648,7 +754,9 @@ async function handleSaveButtonClick(tweetElement, button) {
         
         let typeOptions = [];
         if (config.typeOptions) {
-            typeOptions = config.typeOptions.split('\n')
+            // !! 关键修复：修复了页面按钮的分类解析 Bug !!
+            // (原 错误地使用了 split('\n'))
+            typeOptions = config.typeOptions.split(' ') // 必须使用空格
                 .map(opt => opt.trim())
                 .filter(opt => opt.length > 0);
         }
@@ -685,7 +793,7 @@ async function handleSaveButtonClick(tweetElement, button) {
     }
 }
 
-// 多选类型选择对话框
+// 多选类型选择对话框 (保持你原有的逻辑不变)
 function showMultiTypeSelectionDialog(typeOptions) {
     return new Promise((resolve) => {
         const dialog = document.createElement('div');

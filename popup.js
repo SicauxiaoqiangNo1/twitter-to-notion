@@ -1,4 +1,4 @@
-// popup.js - 修复 typeOptions 保存和同步问题
+// popup.js - 完整重构版 (支持 Thread 保存)
 document.addEventListener('DOMContentLoaded', function() {
     console.log('Popup loaded');
     
@@ -236,7 +236,7 @@ function saveConfiguration() {
     chrome.storage.local.set({ 
         notionApiKey: notionApiKey, 
         databaseId: databaseId,
-        typeOptions: typeOptions // 存储原始多行文本
+        typeOptions: typeOptions // 存储原始文本
     }, () => {
         // 验证配置是否保存成功
         chrome.storage.local.get(["notionApiKey", "databaseId", "typeOptions"], (data) => {
@@ -254,7 +254,7 @@ function saveConfiguration() {
                 if (data.typeOptions) {
                     syncDatabaseOptions(data.notionApiKey, data.databaseId, data.typeOptions)
                         .then(() => {
-                            showStatus(`Configuration saved and ${data.typeOptions.split('\n').filter(opt => opt.trim()).length} categories synced to Notion!`, "success");
+                            showStatus(`Configuration saved and ${data.typeOptions.split(' ').filter(opt => opt.trim()).length} categories synced to Notion!`, "success");
                         })
                         .catch(error => {
                             console.warn('Database sync failed:', error);
@@ -350,7 +350,10 @@ function editConfiguration() {
     }
 }
 
-// popup.js - 修改类型选择为多选
+/**
+ * 主要修改：saveCurrentTweet
+ * (重构为支持 Thread 检测)
+ */
 async function saveCurrentTweet() {
     const { notionApiKey, databaseId, typeOptions } = await chrome.storage.local.get(["notionApiKey", "databaseId", "typeOptions"]);
     
@@ -375,58 +378,86 @@ async function saveCurrentTweet() {
     }
 
     try {
-        showStatus("Extracting tweet data...", "success");
+        showStatus("Analyzing tweet context...", "success");
         
-        // 发送消息到内容脚本获取推文数据
-        const tweetData = await chrome.tabs.sendMessage(tab.id, { action: "extractTweetData" });
-        console.log('Tweet data extracted:', tweetData);
+        // 1. 请求上下文，而不是完整数据
+        const context = await chrome.tabs.sendMessage(tab.id, { action: "getTweetContext" });
+        console.log('Tweet context received:', context);
         
-        if (!tweetData) {
+        if (!context || !context.mainTweetData) {
             showStatus("Could not extract tweet data. Make sure you're on a tweet page.", "error");
             return;
         }
 
-        // 检查文本长度并给出警告（但不阻止保存）
-        if (tweetData.fullContent && tweetData.fullContent.length > 2000) {
-            showStatus("Warning: Tweet content is long and will be truncated in Notion.", "error");
-            // 不返回，继续保存流程
-        }
+        const { isThread, threadLength, mainTweetData } = context;
 
-        // 显示标题编辑和分类选择对话框
+        // 2. 显示对话框
         let selectedTypes = [];
+        let finalTitle = mainTweetData.name;
+        let shouldSaveThread = false;
+        
         if (typeOptions) {
             const typeOptionsArray = typeOptions.split(' ')
                 .map(opt => opt.trim())
                 .filter(opt => opt.length > 0);
             
             if (typeOptionsArray.length > 0) {
-                // 在popup中显示标题编辑和多选类型选择
-                const result = await showSaveDialog(tweetData.name, typeOptionsArray);
+                // 传入 isThread 和 threadLength
+                const result = await showSaveDialog(mainTweetData.name, typeOptionsArray, isThread, threadLength);
+                
                 if (result === null) {
                     showStatus("Save cancelled.", "error");
                     return;
                 }
+                
                 selectedTypes = result.types;
-                if (result.title) {
-                    tweetData.name = result.title;
-                }
+                finalTitle = result.title;
+                shouldSaveThread = result.saveThread;
             }
         }
         
-        console.log('Selected types:', selectedTypes);
-        console.log('Final title:', tweetData.name);
-        
-        // 更新推文数据的类型为数组
-        tweetData.type = selectedTypes;
-        console.log('Final tweet data with types:', tweetData);
+        console.log('Save options selected:', { finalTitle, selectedTypes, shouldSaveThread });
 
-        // 发送到background.js保存
-        chrome.runtime.sendMessage({
-            action: "saveToNotion",
-            tweet: tweetData,
-            notionApiKey: notionApiKey,
-            databaseId: databaseId
-        }, (response) => {
+        // 3. 根据选择，决定发送什么 action
+        let action;
+        let payload;
+
+        if (shouldSaveThread && isThread) {
+            // 保存整个 Thread
+            showStatus(`Extracting full thread (${threadLength} tweets)...`, "success");
+            
+            // 确认保存 Thread，才去抓取完整数据
+            const fullThreadData = await chrome.tabs.sendMessage(tab.id, { action: "getFullThreadData" });
+            
+            if (!fullThreadData || fullThreadData.length === 0) {
+                 showStatus("Failed to extract full thread data.", "error");
+                 return;
+            }
+            
+            action = "saveThreadToNotion";
+            payload = {
+                thread: fullThreadData,
+                title: finalTitle,
+                types: selectedTypes,
+                notionApiKey: notionApiKey,
+                databaseId: databaseId
+            };
+            
+        } else {
+            // 只保存单条推文
+            action = "saveToNotion";
+            mainTweetData.name = finalTitle;
+            mainTweetData.type = selectedTypes;
+            payload = {
+                tweet: mainTweetData,
+                notionApiKey: notionApiKey,
+                databaseId: databaseId
+            };
+        }
+
+        // 4. 发送到 background.js 保存
+        showStatus("Saving to Notion...", "success");
+        chrome.runtime.sendMessage({ action, ...payload }, (response) => {
             console.log('Save response:', response);
             if (response && response.success) {
                 // 显示保存成功界面
@@ -481,6 +512,7 @@ async function saveCurrentTweet() {
     }
 }
 
+// (这个函数在你的原始代码中存在，但未被调用，保留它)
 // 在popup中显示多选类型选择
 function showPopupMultiTypeSelection(typeOptions) {
     return new Promise((resolve) => {
@@ -595,15 +627,30 @@ function showStatus(message, type) {
     // 错误消息保持显示，不自动隐藏
 }
 
-// 显示保存对话框（包含标题编辑和分类选择）
-function showSaveDialog(defaultTitle, typeOptions) {
+/**
+ * 修改：showSaveDialog，添加 Thread 复选框
+ */
+function showSaveDialog(defaultTitle, typeOptions, isThread = false, threadLength = 1) {
     return new Promise((resolve) => {
         // 创建对话框界面
         const selectionDiv = document.createElement('div');
         selectionDiv.id = 'saveDialog';
+
+        // 新增：Thread 复选框的 HTML
+        let threadCheckboxHTML = '';
+        if (isThread) {
+            threadCheckboxHTML = `
+                <div style="margin: 10px 0; padding: 8px; background: #f0f3f4; border-radius: 6px;">
+                    <label style="display: flex; align-items: center; cursor: pointer; font-size: 13px;">
+                        <input type="checkbox" id="saveThreadCheckbox" checked style="width: 16px; height: 16px; margin-right: 8px;">
+                        <strong>Save entire thread (${threadLength} tweets)</strong>
+                    </label>
+                </div>
+            `;
+        }
+
         selectionDiv.innerHTML = `
             <div style="style="margin: 8px 0px;padding: 0px 20px;background: #f8fafc;"; border-radius: 8px;">
-                <!-- 编辑标题 -->
                 <div class="block align-out">
                   <label class="card-title">编辑标题</label>
                   <textarea id="editTitle"
@@ -614,8 +661,9 @@ function showSaveDialog(defaultTitle, typeOptions) {
                     onblur="this.style.borderColor='#cfd9de'">${defaultTitle}</textarea>
                 </div>
 
-                <!-- 按钮与已选标签同一行：按钮左侧，已选标签右侧 -->
-                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
+                ${threadCheckboxHTML}
+
+                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px; margin-top: 10px;">
                     <div style="flex: 0 0 auto;">
                         <button id="confirmSave" style="padding: 8px 12px; background: #2563eb; color: white; 
                                                    border: none; border-radius: 8px; cursor: pointer; font-weight: 600;
@@ -632,7 +680,6 @@ function showSaveDialog(defaultTitle, typeOptions) {
                     </div>
                 </div>
 
-                <!-- 选择标签 -->
                 <div class="block align-out">
                   <label class="card-title">选择标签</label>
                   <div id="tagOptions" class="card tight" style="max-height: 200px; overflow-y: auto;">
@@ -701,10 +748,16 @@ function showSaveDialog(defaultTitle, typeOptions) {
             const selectedTypes = Array.from(selectionDiv.querySelectorAll('input[type="checkbox"]:checked'))
                 .map(checkbox => checkbox.value);
             const editedTitle = document.getElementById('editTitle').value.trim();
+            
+            // 获取复选框状态
+            const saveThread = document.getElementById('saveThreadCheckbox')?.checked || false;
+            
             selectionDiv.remove();
+            
             resolve({
                 title: editedTitle || defaultTitle,
-                types: selectedTypes
+                types: selectedTypes,
+                saveThread: saveThread // 返回新增的值
             });
         };
         
