@@ -250,20 +250,31 @@ function saveConfiguration() {
                 showStatus("Configuration saved successfully!", "success");
                 updateUIState(data.notionApiKey, data.databaseId);
                 
-                // 异步同步到Notion数据库（不阻塞UI）
-                if (data.typeOptions) {
-                    syncDatabaseOptions(data.notionApiKey, data.databaseId, data.typeOptions)
-                        .then(() => {
-                            showStatus(`Configuration saved and ${data.typeOptions.split(' ').filter(opt => opt.trim()).length} categories synced to Notion!`, "success");
-                        })
-                        .catch(error => {
-                            console.warn('Database sync failed:', error);
-                            showStatus("Configuration saved, but failed to sync categories to Notion: " + error.message, "error");
-                            // 同步失败，配置可能无效
-                            updateConfigStatusDisplay(data.notionApiKey, data.databaseId, false);
-                        });
-                }
-            } else {
+                                        // 异步同步到Notion数据库（不阻塞UI）
+                
+                                        if (data.typeOptions) {
+                
+                                            syncDatabaseOptions(data.notionApiKey, data.databaseId, data.typeOptions)
+                
+                                                .then(() => {
+                
+                                                    showStatus(`Configuration saved and ${data.typeOptions.split(' ').filter(opt => opt.trim()).length} categories synced to Notion!`, "success");
+                
+                                                })
+                
+                                                .catch(error => {
+                
+                                                    console.warn('Database sync failed:', error);
+                
+                                                    showStatus("Configuration saved, but failed to sync categories to Notion: " + error.message, "error");
+                
+                                                    // 同步失败，配置可能无效
+                
+                                                    updateConfigStatusDisplay(data.notionApiKey, data.databaseId, false);
+                
+                                                });
+                
+                                        }            } else {
                 showStatus("Failed to save configuration.", "error");
                 // 即使保存失败也要更新状态显示
                 updateConfigStatusDisplay(data.notionApiKey, data.databaseId);
@@ -777,11 +788,11 @@ function showSaveDialog(defaultTitle, typeOptions, isThread = false, threadLengt
 
         // 确认按钮事件
         document.getElementById('confirmSave').onclick = () => {
-            const selectedTypes = Array.from(selectionDiv.querySelectorAll('input[type="checkbox"]:checked'))
+            const selectedTypes = Array.from(selectionDiv.querySelectorAll('#typeCheckboxes input[type="checkbox"]:checked'))
                 .map(checkbox => checkbox.value);
             const editedTitle = document.getElementById('editTitle').value.trim();
             
-            // 获取复选框状态
+            // 获取复-选框状态
             const saveThread = document.getElementById('saveThreadCheckbox')?.checked || false;
             const saveComments = document.getElementById('saveCommentsCheckbox')?.checked || false;
             

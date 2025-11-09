@@ -132,6 +132,21 @@ function buildTweetContentBlocks(tweet, tweetIndex = 0) {
         console.log('Adding quoted tweet embed');
         // 引用推文处理：根据 tweetIndex 决定使用嵌入还是链接形式
                 if (tweetIndex === 0) {
+                  // Add a note before the embed
+                  children.push({
+                    object: "block",
+                    type: "paragraph",
+                    paragraph: {
+                      rich_text: [{
+                        type: "text",
+                        text: { content: "🔁 引用推文:" },
+                        annotations: {
+                          italic: true,
+                          color: "gray"
+                        }
+                      }]
+                    }
+                  });
                   // Tweet 1 (index=0) 使用嵌入形式
                   children.push({
                     object: "block",
