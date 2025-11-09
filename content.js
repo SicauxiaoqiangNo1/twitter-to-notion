@@ -32,6 +32,10 @@ function extractTweetData(tweetElement = null) {
         const timeElement = targetElement.querySelector('time');
         const postTimestamp = timeElement ? timeElement.getAttribute('datetime') : new Date().toISOString();
 
+        // 提取推文的唯一链接
+        const permalink = timeElement ? timeElement.closest('a')?.getAttribute('href') : null;
+        const tweetUrl = permalink ? new URL(permalink, 'https://twitter.com').href : window.location.href;
+
         // 当前时间
         const saveTimestamp = new Date().toISOString();
 
@@ -44,7 +48,7 @@ function extractTweetData(tweetElement = null) {
         // 构建数据
         const result = {
             name: contentWithMedia.text ? contentWithMedia.text.substring(0, 20) + (contentWithMedia.text.length > 20 ? '...' : '') : 'Twitter Post',
-            url: window.location.href,
+            url: tweetUrl, // 使用唯一的推文链接
             type: '',
             sender: authorName,
             postDate: postTimestamp,
@@ -75,18 +79,12 @@ function extractTweetData(tweetElement = null) {
 function extractContentWithMedia(tweetElement) {
     console.log('开始提取内容和媒体');
     
-    // 查找推文内容容器 - 尝试多种选择器
-    let contentContainer = tweetElement.querySelector('[data-testid="tweetText"]')?.parentElement;
-    
-    // 如果找不到，尝试其他可能的内容容器
-    if (!contentContainer) {
-        contentContainer = tweetElement.querySelector('[data-testid="tweet"]') ||
-                          tweetElement.querySelector('article[data-testid="tweet"] div');
-    }
+    // 查找推文内容容器 - 严格模式
+    let contentContainer = tweetElement.querySelector('[data-testid="tweetText"]');
     
     if (!contentContainer) {
-        console.log('No content container found, using tweet element directly');
-        contentContainer = tweetElement;
+        console.log('严格模式：未找到 [data-testid="tweetText"]，返回空内容。');
+        return { text: '', blocks: [] };
     }
     
     console.log('找到的内容容器:', {
@@ -108,6 +106,12 @@ function extractContentWithMedia(tweetElement) {
             acceptNode: function(node) {
                 // 跳过引用推文容器的内容
                 if (node.nodeType === Node.ELEMENT_NODE) {
+                    // 新增：跳过时间戳链接
+                    if (node.tagName === 'A' && node.querySelector('time')) {
+                        console.log('发现并拒绝时间戳链接节点:', node);
+                        return NodeFilter.FILTER_REJECT;
+                    }
+
                     const isQuoteTweet = node.closest('[data-testid="quote"]') ||
                                        (node.closest('article[data-testid="tweet"]') &&
                                         node.closest('article[data-testid="tweet"]') !== contentContainer.closest('article[data-testid="tweet"]'));
@@ -136,6 +140,17 @@ function extractContentWithMedia(tweetElement) {
                                           node.textContent.includes('Subscribe'));
                     if (isActionButton) {
                         return NodeFilter.FILTER_REJECT;
+                    }
+
+                    // 新增：跳过翻译按钮区域
+                    const text = node.textContent || "";
+                    if (text.includes('Show translation') || text.includes('翻译帖子') || text.includes('Translate post')) {
+                        const isButton = node.tagName === 'BUTTON' || node.closest('button');
+                        const hasTranslateIcon = node.querySelector('svg path[d^="M12.745"]');
+                        if (isButton || hasTranslateIcon) {
+                            console.log('发现并拒绝翻译相关节点:', node);
+                            return NodeFilter.FILTER_REJECT;
+                        }
                     }
                 }
                 return NodeFilter.FILTER_ACCEPT;
@@ -172,64 +187,28 @@ function extractContentWithMedia(tweetElement) {
 
     while (currentNode = walker.nextNode()) {
         if (currentNode.nodeType === Node.TEXT_NODE) {
-            // 检查这个文本节点是否在链接元素内，如果是则跳过，因为链接会在元素处理时单独处理
-            const parentLink = currentNode.parentElement?.closest('a');
-            if (parentLink && parentLink.href) {
-                console.log('📝 跳过链接内的文本节点，将在链接元素中处理:', {
-                    text: currentNode.textContent?.substring(0, 50),
-                    parentLinkHref: parentLink.href
-                });
-                continue;
-            }
-            
             const text = currentNode.textContent;
             if (text && text.trim()) {
-                // 获取文本的样式信息
                 const parent = currentNode.parentElement;
                 const isBold = isElementBold(parent);
-                
-                currentTextBlock.push({
+                const linkInfo = parent.closest('a');
+
+                const textData = {
                     text: text,
                     annotations: {
                         bold: isBold,
                         italic: false
                     }
-                });
+                };
+
+                if (linkInfo && linkInfo.href) {
+                    textData.link = { url: linkInfo.href };
+                }
+
+                currentTextBlock.push(textData);
             }
         } else if (currentNode.nodeType === Node.ELEMENT_NODE) {
             const tagName = currentNode.tagName.toLowerCase();
-            
-            // 处理链接
-            if (tagName === 'a' && currentNode.href) {
-                const linkText = currentNode.textContent?.trim();
-                if (linkText) {
-                    // 检查是否已经处理过相同文本和URL的链接，避免重复
-                    const isDuplicateLink = currentTextBlock.some(item =>
-                        item.text === linkText && item.link?.url === currentNode.href
-                    );
-                    
-                    if (!isDuplicateLink) {
-                        console.log('🔗 处理链接:', {
-                            text: linkText,
-                            href: currentNode.href,
-                            currentTextBlockLength: currentTextBlock.length,
-                            isDuplicate: false
-                        });
-                        currentTextBlock.push({
-                            text: linkText,
-                            annotations: { bold: false, italic: false },
-                            link: { url: currentNode.href }
-                        });
-                    } else {
-                        console.log('🔗 跳过重复链接:', {
-                            text: linkText,
-                            href: currentNode.href,
-                            isDuplicate: true
-                        });
-                    }
-                }
-                continue;
-            }
             
             // 处理图片 - 遇到图片时先输出之前的文本
             if (tagName === 'img') {
@@ -555,8 +534,25 @@ function isElementBold(element) {
     return false;
 }
 
-// ==================== Thread 提取逻辑 (新增) ====================
+/**
+ * 新增：检查一个推文元素是否是广告
+ * @param {Element} tweetElement
+ * @returns {boolean}
+ */
+function isAdTweet(tweetElement) {
+    if (!tweetElement) return false;
+    // 查找所有span元素并检查文本内容是否为 "Ad"
+    const adSpans = tweetElement.querySelectorAll('span');
+    for (const span of adSpans) {
+        if (span.textContent.trim() === 'Ad') {
+            console.log('发现广告推文，将跳过:', tweetElement);
+            return true;
+        }
+    }
+    return false;
+}
 
+// ==================== Thread 提取逻辑 (新增) ====================
 /**
  * 新增：提取作者 Handle 的辅助函数
  * @param {Element} tweetElement
@@ -584,7 +580,17 @@ function getTweetContext() {
             return null;
         }
 
-        const mainTweetElement = allTweetElements[0];
+        let startIndex = 0;
+        while(startIndex < allTweetElements.length && isAdTweet(allTweetElements[startIndex])) {
+            startIndex++;
+        }
+
+        if (startIndex >= allTweetElements.length) {
+            console.log('页面上只找到了广告推文');
+            return null;
+        }
+
+        const mainTweetElement = allTweetElements[startIndex];
         const mainAuthorHandle = extractAuthorHandle(mainTweetElement);
         
         if (!mainAuthorHandle) {
@@ -597,7 +603,11 @@ function getTweetContext() {
         }
 
         let threadLength = 0;
-        for (const el of allTweetElements) {
+        for (let i = startIndex; i < allTweetElements.length; i++) {
+            const el = allTweetElements[i];
+            if (isAdTweet(el)) {
+                continue; // 跳过广告
+            }
             if (extractAuthorHandle(el) === mainAuthorHandle) {
                 threadLength++;
             } else {
@@ -629,25 +639,173 @@ function getFullThreadData() {
     const allTweetElements = document.querySelectorAll('article[data-testid="tweet"]');
     
     if (allTweetElements.length === 0) return [];
+
+    let startIndex = 0;
+    while(startIndex < allTweetElements.length && isAdTweet(allTweetElements[startIndex])) {
+        startIndex++;
+    }
+
+    if (startIndex >= allTweetElements.length) return [];
     
-    const mainAuthorHandle = extractAuthorHandle(allTweetElements[0]);
+    const mainAuthorHandle = extractAuthorHandle(allTweetElements[startIndex]);
     if (!mainAuthorHandle) {
-        // 无作者，只返回第一条
-        const data = extractTweetData(allTweetElements[0]);
+        // 无作者，只返回第一条非广告推文
+        const data = extractTweetData(allTweetElements[startIndex]);
         return data ? [data] : [];
     }
 
-    for (const tweetElement of allTweetElements) {
+    for (let i = startIndex; i < allTweetElements.length; i++) {
+        const tweetElement = allTweetElements[i];
+        if (isAdTweet(tweetElement)) {
+            console.log('在 getFullThreadData 中跳过广告');
+            continue; // 跳过广告
+        }
+
         if (extractAuthorHandle(tweetElement) === mainAuthorHandle) {
             const tweetData = extractTweetData(tweetElement);
             if (tweetData) {
                 threadTweets.push(tweetData);
             }
         } else {
-            break; // 停止
+            break; // 遇到不同作者的真实推文，停止
         }
     }
     return threadTweets;
+}
+
+/**
+ * 新增：提取与博主的直接对话回复
+ * @param {Element[]} threadElements - 推文元素数组
+ * @param {string} mainAuthorHandle - 主推文作者的handle
+ * @returns {Array} 筛选后的直接回复数组
+ */
+function extractDirectRepliesFromThread(threadElements, mainAuthorHandle) {
+    console.log('开始提取与博主的直接对话回复');
+    const replies = [];
+    const normalizedHandle = mainAuthorHandle ? mainAuthorHandle.replace('@', '') : '';
+    
+    console.log('目标博主handle:', normalizedHandle);
+    
+    for (let i = 0; i < threadElements.length; i++) {
+        const tweetElement = threadElements[i];
+        const content = extractReplyContent(tweetElement);
+        const authorHandle = extractAuthorHandle(tweetElement);
+        
+        // 跳过博主自己的回复
+        if (authorHandle === mainAuthorHandle) {
+            continue;
+        }
+        
+        console.log(`检查第${i + 1}条回复:`, {
+            author: authorHandle,
+            content: content.substring(0, 50) + (content.length > 50 ? '...' : ''),
+            contentLength: content.length
+        });
+        
+        // 新逻辑：只检查内容长度是否≥5个字符
+        if (content.length >= 5) {
+            console.log('✅ 识别为有效问答对 (长度符合)');
+            replies.push({
+                question: content,
+                author: authorHandle,
+                timestamp: extractTimestamp(tweetElement),
+                authorName: extractAuthorName(tweetElement)
+            });
+        } else {
+            console.log('❌ 跳过（内容太短）');
+        }
+    }
+    
+    console.log('最终筛选出的问答对数量:', replies.length);
+    return replies;
+}
+
+/**
+ * 检查回复是否@了博主
+ * @param {string} content - 回复内容
+ * @param {string} authorHandle - 博主handle（不含@）
+ * @returns {boolean} 是否@了博主
+ */
+function isReplyToAuthor(content, authorHandle) {
+    if (!content || !authorHandle) return false;
+    
+    // 检查是否包含@博主
+    const hasAtSymbol = content.includes(`@${authorHandle}`);
+    const hasFullHandle = content.includes(authorHandle);
+    
+    console.log('回复检测结果:', {
+        content: content.substring(0, 30),
+        authorHandle: authorHandle,
+        hasAtSymbol: hasAtSymbol,
+        hasFullHandle: hasFullHandle,
+        isReply: hasAtSymbol || hasFullHandle
+    });
+    
+    return hasAtSymbol || hasFullHandle;
+}
+
+/**
+ * 从tweet元素中提取回复内容
+ * @param {Element} tweetElement - tweet元素
+ * @returns {string} 提取的内容
+ */
+function extractReplyContent(tweetElement) {
+    if (!tweetElement) return '';
+    
+    // 查找推文文本内容
+    const textElement = tweetElement.querySelector('[data-testid="tweetText"]');
+    if (textElement) {
+        return textElement.textContent || '';
+    }
+    
+    // 备用方案：查找其他可能的文本容器
+    const contentSelectors = [
+        '[data-testid="tweet"]',
+        'div[lang]',
+        '.tweet-text',
+        '.css-901oao'
+    ];
+    
+    for (const selector of contentSelectors) {
+        const element = tweetElement.querySelector(selector);
+        if (element) {
+            return element.textContent || '';
+        }
+    }
+    
+    return '';
+}
+
+/**
+ * 提取作者名称
+ * @param {Element} tweetElement - tweet元素
+ * @returns {string} 作者名称
+ */
+function extractAuthorName(tweetElement) {
+    const authorElement = tweetElement.querySelector('[data-testid="User-Name"]');
+    if (authorElement) {
+        const nameElement = authorElement.querySelector('span');
+        if (nameElement) {
+            return nameElement.textContent || '';
+        }
+    }
+    return '';
+}
+
+/**
+ * 提取时间戳
+ * @param {Element} tweetElement - tweet元素
+ * @returns {string} 格式化的时间戳
+ */
+function extractTimestamp(tweetElement) {
+    const timeElement = tweetElement.querySelector('time');
+    if (timeElement) {
+        const datetime = timeElement.getAttribute('datetime');
+        if (datetime) {
+            return new Date(datetime).toLocaleString('zh-CN');
+        }
+    }
+    return new Date().toLocaleString('zh-CN');
 }
 
 
@@ -655,11 +813,7 @@ function getFullThreadData() {
 
 // 修改：原有的消息监听器，增加 Thread 相关 action
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "extractTweetData") {
-        // (此分支保留，用于你页面内的保存按钮)
-        const tweetData = extractTweetData();
-        sendResponse(tweetData);
-    } else if (request.action === "getTweetContext") {
+    if (request.action === "getTweetContext") {
         // 新增：Popup 打开时请求上下文
         const context = getTweetContext();
         sendResponse(context);
@@ -667,268 +821,100 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // 新增：用户确认保存 Thread 后，请求完整数据
         const threadData = getFullThreadData();
         sendResponse(threadData);
+    } else if (request.action === "extractCommentsAndChains") {
+        console.log('收到提取评论和对话链的请求');
+        const items = extractCommentsAndChains();
+        sendResponse(items);
     }
     return true;
 });
 
-// 添加保存按钮到Twitter界面
-function addSaveButton() {
+/**
+ * 新增：提取评论和对话链
+ * @returns {Array<Object|Array<Object>>} 一个混合数组，包含独立的评论对象和对话链数组
+ */
+function extractCommentsAndChains() {
+    console.log('开始提取评论和对话链 (V4 - 用户指定逻辑)');
+    const results = [];
+    const allTweetElements = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
+
+    if (allTweetElements.length <= 1) {
+        return [];
+    }
+
+    let startIndex = 0;
+    while (startIndex < allTweetElements.length && (isAdTweet(allTweetElements[startIndex]) || startIndex === 0)) {
+        startIndex++;
+    }
+
+    // 预处理所有评论，获取数据和分隔符状态
+    const allComments = allTweetElements.slice(startIndex).map(el => {
+        if (isAdTweet(el)) return null;
+        return {
+            data: extractTweetData(el),
+            hasSeparator: el.querySelector('div.css-175oi2r.r-1bimlpy.r-f8sm7e.r-m5arl1.r-16y2uox.r-14gqq1x') !== null
+        };
+    }).filter(Boolean); // 过滤掉广告
+
+    let i = 0;
+    while (i < allComments.length) {
+        const currentComment = allComments[i];
+
+        // 规则 3: 如果当前评论有分隔符，它与下一个评论组成一个链
+        if (currentComment.hasSeparator) {
+            const currentChain = [currentComment.data];
+            let j = i + 1;
+
+            // 规则 4: 只要链中的前一个元素有分隔符，就继续添加下一个元素
+            while (j < allComments.length && allComments[j - 1].hasSeparator) {
+                currentChain.push(allComments[j].data);
+                j++;
+            }
+            
+            console.log(`📦 打包一个对话链，从评论 ${i} 开始，共 ${currentChain.length} 条`);
+            results.push(currentChain);
+            i = j; // 跳过已处理的链
+        } else {
+            // 规则 2: 如果当前评论没有分隔符，它是独立的
+            console.log(`📝 添加一个独立评论 (索引 ${i})`);
+            results.push(currentComment.data);
+            i++;
+        }
+    }
+
+    console.log(`=== 对话链提取完成 === 共找到 ${results.length} 个项目（独立评论或对话链）`);
+    const chainCount = results.filter(item => Array.isArray(item)).length;
+    const commentCount = results.filter(item => !Array.isArray(item)).length;
+    console.log(`📊 最终统计: ${chainCount} 个对话链, ${commentCount} 条独立评论`);
+
+    return results;
+}
+
+// 移除 Twitter 界面的保存按钮相关代码
+// 保留 extractTweetData 函数用于 popup 界面的数据提取
+
+// 启动
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+        // 移除 Twitter 界面的保存按钮相关代码
+        // 保留 DOM 监听器用于其他功能
+        const observer = new MutationObserver(() => {
+            // 可以在这里添加其他需要的 DOM 监听功能
+        });
+        
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+    });
+} else {
+    // 可以在这里添加其他需要的 DOM 监听功能
     const observer = new MutationObserver(() => {
-        addButtonsToTweets();
+        // 可以在这里添加其他需要的 DOM 监听功能
     });
     
     observer.observe(document.body, {
         childList: true,
         subtree: true
     });
-    
-    setTimeout(addButtonsToTweets, 1000);
-}
-
-function addButtonsToTweets() {
-    const tweets = document.querySelectorAll('article[data-testid="tweet"]');
-    
-    tweets.forEach(tweet => {
-        if (tweet.querySelector('.x-to-notion-save-btn')) {
-            return;
-        }
-        
-        const shareButton = tweet.querySelector('[data-testid="share"]');
-        if (!shareButton) return;
-        
-        const saveButton = document.createElement('div');
-        saveButton.className = 'x-to-notion-save-btn';
-        saveButton.innerHTML = `
-            <button type="button" style="
-                background: transparent;
-                border: none;
-                padding: 8px;
-                cursor: pointer;
-                border-radius: 50%;
-                transition: background-color 0.2s;
-                color: rgb(113, 118, 123);
-            " title="Save to Notion">
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-                    <path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2zm0 15l-5-2.18L7 18V5h10v13z"/>
-                </svg>
-            </button>
-        `;
-        
-        shareButton.parentNode.insertBefore(saveButton, shareButton.nextSibling);
-        
-        const button = saveButton.querySelector('button');
-        button.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            await handleSaveButtonClick(tweet, button);
-        });
-    });
-}
-
-async function handleSaveButtonClick(tweetElement, button) {
-    try {
-        button.style.color = '#1d9bf0';
-        button.disabled = true;
-        
-        const tweetData = extractTweetData(tweetElement);
-        console.log('📊 保存前的推文数据:', {
-            hasContentBlocks: !!tweetData?.contentBlocks,
-            contentBlocksCount: tweetData?.contentBlocks?.length,
-            imageBlocks: tweetData?.contentBlocks?.filter(b => b.type === 'image').length,
-            imageUrls: tweetData?.contentBlocks?.filter(b => b.type === 'image').map(b => b.url)
-        });
-        
-        if (!tweetData) {
-            showButtonFeedback(button, '❌ Failed to extract tweet data', false);
-            return;
-        }
-        
-        const config = await new Promise(resolve => {
-            chrome.storage.local.get(["notionApiKey", "databaseId", "typeOptions"], resolve);
-        });
-        
-        if (!config.notionApiKey || !config.databaseId) {
-            showButtonFeedback(button, '❌ Please configure plugin first', false);
-            return;
-        }
-        
-        let typeOptions = [];
-        if (config.typeOptions) {
-            // !! 关键修复：修复了页面按钮的分类解析 Bug !!
-            // (原 错误地使用了 split('\n'))
-            typeOptions = config.typeOptions.split(' ') // 必须使用空格
-                .map(opt => opt.trim())
-                .filter(opt => opt.length > 0);
-        }
-        
-        let selectedTypes = [];
-        if (typeOptions.length > 0) {
-            selectedTypes = await showMultiTypeSelectionDialog(typeOptions);
-            if (selectedTypes === null) {
-                resetButton(button);
-                return;
-            }
-        }
-        
-        tweetData.type = selectedTypes;
-        
-        const response = await new Promise(resolve => {
-            chrome.runtime.sendMessage({
-                action: "saveToNotion",
-                tweet: tweetData,
-                notionApiKey: config.notionApiKey,
-                databaseId: config.databaseId
-            }, resolve);
-        });
-        
-        if (response && response.success) {
-            showButtonFeedback(button, '✅ Saved to Notion!', true);
-        } else {
-            showButtonFeedback(button, '❌ Save failed: ' + (response?.error || 'Unknown error'), false);
-        }
-        
-    } catch (error) {
-        console.error('Error saving tweet:', error);
-        showButtonFeedback(button, '❌ Error: ' + error.message, false);
-    }
-}
-
-// 多选类型选择对话框 (保持你原有的逻辑不变)
-function showMultiTypeSelectionDialog(typeOptions) {
-    return new Promise((resolve) => {
-        const dialog = document.createElement('div');
-        dialog.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: white;
-            border-radius: 16px;
-            padding: 20px;
-            box-shadow: 0 0 20px rgba(0,0,0,0.3);
-            z-index: 10000;
-            min-width: 300px;
-            max-width: 400px;
-            max-height: 500px;
-            overflow: hidden;
-            font-family: system-ui, -apple-system, sans-serif;
-        `;
-        
-        dialog.innerHTML = `
-            <h3 style="margin: 0 0 15px 0; font-size: 18px;">选择分类 (可多选)</h3>
-            <div style="margin-bottom: 10px; display: flex; gap: 10px;">
-                <button id="selectAllBtn" style="padding: 6px 12px; background: #e8f5fe; color: #1da1f2; border: 1px solid #1da1f2; border-radius: 4px; cursor: pointer; font-size: 12px;">全选</button>
-                <button id="clearAllBtn" style="padding: 6px 12px; background: #fef0ef; color: #e0245e; border: 1px solid #e0245e; border-radius: 4px; cursor: pointer; font-size: 12px;">清除</button>
-            </div>
-            <div id="typeOptionsContainer" style="margin-bottom: 15px; max-height: 300px; overflow-y: auto; border: 1px solid #e1e8ed; border-radius: 8px; padding: 10px;"></div>
-            <div style="display: flex; gap: 10px; justify-content: flex-end;">
-                <button id="cancelBtn" style="padding: 8px 16px; border: 1px solid #cfd9de; background: white; border-radius: 20px; cursor: pointer;">取消</button>
-                <button id="confirmBtn" style="padding: 8px 16px; background: #1da1f2; color: white; border: none; border-radius: 20px; cursor: pointer; font-weight: 600;">确认</button>
-            </div>
-        `;
-        
-        const container = dialog.querySelector('#typeOptionsContainer');
-        
-        if (typeOptions.length === 0) {
-            const noOptions = document.createElement('div');
-            noOptions.textContent = '没有可用的分类选项';
-            noOptions.style.cssText = `padding: 12px; text-align: center; color: #536471;`;
-            container.appendChild(noOptions);
-        } else {
-            typeOptions.forEach((type, index) => {
-                const label = document.createElement('label');
-                label.style.cssText = `
-                    display: flex;
-                    align-items: center;
-                    padding: 10px;
-                    margin: 5px 0;
-                    border-radius: 8px;
-                    cursor: pointer;
-                    transition: background-color 0.2s;
-                `;
-                label.onmouseover = () => label.style.background = '#f7f9fa';
-                label.onmouseout = () => label.style.background = 'transparent';
-                label.innerHTML = `<input type="checkbox" value="${type}" id="type${index}" style="margin-right: 10px;"><span>${type}</span>`;
-                container.appendChild(label);
-            });
-        }
-        
-        const overlay = document.createElement('div');
-        overlay.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.5);
-            z-index: 9999;
-        `;
-        
-        dialog.querySelector('#selectAllBtn').onclick = () => {
-            dialog.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
-                checkbox.checked = true;
-            });
-        };
-        
-        dialog.querySelector('#clearAllBtn').onclick = () => {
-            dialog.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
-                checkbox.checked = false;
-            });
-        };
-        
-        dialog.querySelector('#confirmBtn').onclick = () => {
-            const selected = Array.from(dialog.querySelectorAll('input[type="checkbox"]:checked'))
-                .map(checkbox => checkbox.value);
-            document.body.removeChild(overlay);
-            resolve(selected);
-        };
-        
-        dialog.querySelector('#cancelBtn').onclick = () => {
-            document.body.removeChild(overlay);
-            resolve(null);
-        };
-        
-        overlay.onclick = (e) => {
-            if (e.target === overlay) {
-                document.body.removeChild(overlay);
-                resolve(null);
-            }
-        };
-        
-        overlay.appendChild(dialog);
-        document.body.appendChild(overlay);
-        
-        const handleKeydown = (e) => {
-            if (e.key === 'Escape') {
-                document.body.removeChild(overlay);
-                document.removeEventListener('keydown', handleKeydown);
-                resolve(null);
-            }
-        };
-        document.addEventListener('keydown', handleKeydown);
-    });
-}
-
-function showButtonFeedback(button, message, isSuccess) {
-    const originalColor = button.style.color;
-    const originalHTML = button.innerHTML;
-    button.innerHTML = message;
-    button.style.color = isSuccess ? '#00ba7c' : '#f91880';
-    setTimeout(() => {
-        button.innerHTML = originalHTML;
-        button.style.color = originalColor;
-        button.disabled = false;
-    }, 3000);
-}
-
-function resetButton(button) {
-    button.style.color = 'rgb(113, 118, 123)';
-    button.disabled = false;
-}
-
-// 启动
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', addSaveButton);
-} else {
-    addSaveButton();
 }

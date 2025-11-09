@@ -6,20 +6,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('Background received message:', message.action);
   
   if (message.action === "saveToNotion") {
-    console.log('Processing saveToNotion request');
-    
-    saveToNotion(message.tweet, message.notionApiKey, message.databaseId)
-      .then(result => {
-        console.log('Save successful, sending response');
-        sendResponse({ success: true, data: result });
-      })
-      .catch(error => {
-        console.error('Save failed:', error);
-        sendResponse({ success: false, error: error.message });
-      });
-    
-    return true;
-  }
+      console.log('Processing saveToNotion request');
+      
+      saveToNotion(message.tweet, message.notionApiKey, message.databaseId, message.comments)
+        .then(result => {
+          console.log('Save successful, sending response');
+          sendResponse({ success: true, data: result });
+        })
+        .catch(error => {
+          console.error('Save failed:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      
+      return true;
+    }
   
   // 新增：处理保存 Thread 的 action
   if (message.action === "saveThreadToNotion") {
@@ -30,7 +30,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       message.title,       // 弹窗中编辑后的标题
       message.types,       // 弹窗中选择的分类
       message.notionApiKey,
-      message.databaseId
+      message.databaseId,
+      message.comments     // 传入评论
     )
       .then(result => {
         console.log('Thread save successful, sending response');
@@ -60,7 +61,7 @@ const truncateText = (text, maxLength = 2000) => {
  * 新增：可重用的函数，用于构建一条推文的内容块
  * (从 saveToNotion 中提取)
  */
-function buildTweetContentBlocks(tweet) {
+function buildTweetContentBlocks(tweet, tweetIndex = 0) {
   const children = [];
 
   // 按顺序添加内容块（文本、媒体和引用推文混合）
@@ -72,7 +73,7 @@ function buildTweetContentBlocks(tweet) {
         // 处理文本块
         if (block.richText && block.richText.length > 0) {
           // 使用富文本格式
-          const paragraphBlocks = createParagraphBlocksFromRichText(block.richText);
+          const paragraphBlocks = createParagraphBlocksFromRichText(block.richText, tweetIndex);
           paragraphBlocks.forEach(paragraph => {
             children.push(paragraph);
           });
@@ -109,6 +110,7 @@ function buildTweetContentBlocks(tweet) {
         
       } else if (block.type === 'video') {
         // 添加视频块（Notion不支持直接嵌入，用链接代替）
+        // 视频块处理：保持链接形式
         children.push({
           object: "block",
           type: "paragraph",
@@ -128,24 +130,35 @@ function buildTweetContentBlocks(tweet) {
       } else if (block.type === 'quoted_tweet') {
         // 添加引用推文嵌入块
         console.log('Adding quoted tweet embed');
-        children.push({
-          object: "block",
-          type: "paragraph",
-          paragraph: {
-            rich_text: [{
-              type: "text",
-              text: { content: "🔁 引用推文" },
-              annotations: { bold: true }
-            }]
-          }
-        });
-        children.push({
-          object: "block",
-          type: "embed",
-          embed: {
-            url: block.url
-          }
-        });
+        // 引用推文处理：根据 tweetIndex 决定使用嵌入还是链接形式
+                if (tweetIndex === 0) {
+                  // Tweet 1 (index=0) 使用嵌入形式
+                  children.push({
+                    object: "block",
+                    type: "embed",
+                    embed: {
+                      url: block.url
+                    }
+                  });
+                } else {
+                  // Tweet 2+ (index>=1) 使用链接形式
+                  children.push({
+                    object: "block",
+                    type: "paragraph",
+                    paragraph: {
+                      rich_text: [{
+                        type: "text",
+                        text: { content: "🔁 引用推文: " }
+                      }, {
+                        type: "text",
+                        text: {
+                          content: block.url,
+                          link: { url: block.url }
+                        }
+                      }]
+                    }
+                  });
+                }
       }
     });
   } else if (tweet.fullContent) {
@@ -231,14 +244,91 @@ function buildFooterBlocks() {
   return children;
 }
 
+function buildCommentsAndChainsSection(items, mainAuthorHandle) {
+  if (!items || items.length === 0) return [];
+
+  const children = [];
+
+  // 添加评论区标题
+  children.push({
+    object: "block",
+    type: "heading_2",
+    heading_2: {
+      rich_text: [{ text: { content: "评论区" } }],
+      color: "gray"
+    }
+  });
+
+  // 在Thread和评论之间添加隔断
+  children.push({
+    object: "block",
+    type: "divider",
+    divider: {}
+  });
+
+  // 循环处理每个项目（可能是独立评论对象，也可能是对话链数组）
+  items.forEach((item, i) => {
+    const isChain = Array.isArray(item);
+    
+    // 将要处理的推文（无论是单个还是链中的）放入一个数组中
+    const tweetsToProcess = isChain ? item : [item];
+
+    tweetsToProcess.forEach(tweet => {
+      if (!tweet) return; // 安全检查
+      const isMainAuthor = tweet.metadata.authorHandle === mainAuthorHandle;
+
+      // 添加推文内容
+      if (tweet.fullContent) {
+        children.push({
+          object: "block",
+          type: "quote",
+          quote: {
+            rich_text: [{
+              type: "text",
+              text: { content: truncateText(tweet.fullContent, 2000) },
+              // 如果是主博主，则高亮
+              ...(isMainAuthor && { annotations: { color: "blue" } })
+            }]
+          }
+        });
+      }
+
+      // 添加作者信息
+      const authorInfo = isMainAuthor ? `— ${tweet.sender} (博主)` : `— ${tweet.sender}`;
+      children.push({
+        object: "block",
+        type: "paragraph",
+        paragraph: {
+          rich_text: [{
+            type: "text",
+            text: { content: authorInfo },
+            annotations: { italic: true, color: isMainAuthor ? "blue" : "gray" }
+          }]
+        }
+      });
+    });
+
+    // 在每个项目（独立评论或整个对话链）后添加分割线
+    if (i < items.length - 1) {
+      children.push({
+        object: "block",
+        type: "divider",
+        divider: {}
+      });
+    }
+  });
+
+  return children;
+}
+
 
 // ==================== 主要功能函数 ====================
-
 /**
  * 修改：原 saveToNotion 函数，使用重构的 Buidler
  */
-async function saveToNotion(tweet, apiKey, databaseId) {
+async function saveToNotion(tweet, apiKey, databaseId, comments = []) {
   console.log('Starting saveToNotion with content blocks:', tweet.contentBlocks?.length);
+  console.log('Comments received:', comments?.length || 0);
 
   const cleanDatabaseId = databaseId.replace(/-/g, '');
   const notionUrl = "https://api.notion.com/v1/pages";
@@ -259,23 +349,36 @@ async function saveToNotion(tweet, apiKey, databaseId) {
   const data = {
     parent: { database_id: cleanDatabaseId },
     properties: {
-      "Name": { 
-        title: [{ text: { content: truncateText(tweet.name, 100) || "Twitter Post" } }] 
+      "Name": {
+        title: [{ text: { content: truncateText(tweet.name, 100) || "Twitter Post" } }]
       },
       "URL": { url: tweet.url },
       "Type": { multi_select: typeMultiSelect },
-      "Sender": { 
-        rich_text: [{ text: { content: truncateText(tweet.sender, 200) || "Unknown" } }] 
+      "Sender": {
+        rich_text: [{ text: { content: truncateText(tweet.sender, 200) || "Unknown" } }]
       },
       "PostDate": { date: { start: tweet.postDate } },
       "SaveDate": { date: { start: tweet.saveDate } }
     },
     // 使用重构的函数
     children: [
-      ...buildTweetContentBlocks(tweet),
-      ...buildFooterBlocks()
-    ]
+          ...buildTweetContentBlocks(tweet, 0), // 单条推文保存时传递 index=0
+        ]
   };
+
+  // 新增：如果有评论，添加评论区
+  if (comments && comments.length > 0) {
+    // 在主推文内容和评论区之间添加隔断
+    data.children.push({
+      object: "block",
+      type: "divider",
+      divider: {}
+    });
+    data.children.push(...buildCommentsAndChainsSection(comments, tweet.metadata.authorHandle));
+  }
+
+  // 添加页脚
+  data.children.push(...buildFooterBlocks());
 
   try {
     console.log('Sending request to Notion API...');
@@ -320,7 +423,7 @@ async function saveToNotion(tweet, apiKey, databaseId) {
 /**
  * 新增：保存完整 Thread 的函数
  */
-async function saveThreadToNotion(thread, title, types, apiKey, databaseId) {
+async function saveThreadToNotion(thread, title, types, apiKey, databaseId, comments = []) {
   if (!thread || thread.length === 0) {
     throw new Error("No tweet data provided for thread");
   }
@@ -345,13 +448,13 @@ async function saveThreadToNotion(thread, title, types, apiKey, databaseId) {
   const data = {
     parent: { database_id: cleanDatabaseId },
     properties: {
-      "Name": { 
-        title: [{ text: { content: truncateText(title || firstTweet.name, 100) } }] 
+      "Name": {
+        title: [{ text: { content: truncateText(title || firstTweet.name, 100) } }]
       },
       "URL": { url: firstTweet.url }, // 主推文的 URL
       "Type": { multi_select: typeMultiSelect },
-      "Sender": { 
-        rich_text: [{ text: { content: truncateText(firstTweet.sender, 200) } }] 
+      "Sender": {
+        rich_text: [{ text: { content: truncateText(firstTweet.sender, 200) } }]
       },
       "PostDate": { date: { start: firstTweet.postDate } },
       "SaveDate": { date: { start: new Date().toISOString() } } // 保存日期是现在
@@ -374,8 +477,8 @@ async function saveThreadToNotion(thread, title, types, apiKey, databaseId) {
       });
     }
 
-    // 使用重构的函数来构建内容块
-    const tweetBlocks = buildTweetContentBlocks(tweet);
+    // 使用重构的函数来构建内容块，传递推文索引
+        const tweetBlocks = buildTweetContentBlocks(tweet, index);
     data.children.push(...tweetBlocks);
 
     // 在每条推文之间添加分割线
@@ -388,10 +491,21 @@ async function saveThreadToNotion(thread, title, types, apiKey, databaseId) {
     }
   }
 
-  // 3. 添加统一的页脚
+  // 新增：如果需要，添加评论区
+  if (comments && comments.length > 0) {
+    // 在Thread内容和评论区之间添加隔断
+    data.children.push({
+      object: "block",
+      type: "divider",
+      divider: {}
+    });
+    data.children.push(...buildCommentsAndChainsSection(comments, firstTweet.metadata.authorHandle));
+  }
+
+  // 4. 添加统一的页脚
   data.children.push(...buildFooterBlocks());
 
-  // 4. 发送请求
+  // 5. 发送请求
   try {
     console.log(`Sending thread (${thread.length} tweets) request to Notion API...`);
     
@@ -425,7 +539,7 @@ async function saveThreadToNotion(thread, title, types, apiKey, databaseId) {
 // (以下是你原有的辅助函数，保持不变)
 
 // 从富文本创建段落块
-function createParagraphBlocksFromRichText(richTextArray) {
+function createParagraphBlocksFromRichText(richTextArray, tweetIndex = 0) {
   console.log('📝 开始处理富文本数组:', {
     totalItems: richTextArray.length,
     items: richTextArray.map(item => ({
@@ -452,22 +566,22 @@ function createParagraphBlocksFromRichText(richTextArray) {
     });
     
     const notionTextItem = {
-      type: "text",
-      text: textItem.link ?
-        {
-          content: textItem.text,
-          link: textItem.link
-        } :
-        { content: textItem.text },
-      annotations: {
-        bold: textItem.annotations.bold || false,
-        italic: textItem.annotations.italic || false,
-        strikethrough: false,
-        underline: false,
-        code: false,
-        color: "default"
-      }
-    };
+          type: "text",
+          text: textItem.link ?
+                      {
+                        content: textItem.text,
+                        link: textItem.link
+                      } :
+                      { content: textItem.text },
+          annotations: {
+            bold: textItem.annotations.bold || false,
+            italic: textItem.annotations.italic || false,
+            strikethrough: false,
+            underline: false,
+            code: false,
+            color: "default"
+          }
+        };
 
     // 检查当前段落长度
     const currentLength = currentParagraph.paragraph.rich_text

@@ -391,71 +391,93 @@ async function saveCurrentTweet() {
 
         const { isThread, threadLength, mainTweetData } = context;
 
-        // 2. 显示对话框
-        let selectedTypes = [];
-        let finalTitle = mainTweetData.name;
-        let shouldSaveThread = false;
+                // 2. 显示对话框
+                let selectedTypes = [];
+                let finalTitle = mainTweetData.name;
+                let shouldSaveThread = false;
+                let shouldSaveComments = false;
         
-        if (typeOptions) {
-            const typeOptionsArray = typeOptions.split(' ')
-                .map(opt => opt.trim())
-                .filter(opt => opt.length > 0);
-            
-            if (typeOptionsArray.length > 0) {
-                // 传入 isThread 和 threadLength
-                const result = await showSaveDialog(mainTweetData.name, typeOptionsArray, isThread, threadLength);
-                
-                if (result === null) {
-                    showStatus("Save cancelled.", "error");
-                    return;
+                if (typeOptions) {
+                    const typeOptionsArray = typeOptions.split(' ')
+                        .map(opt => opt.trim())
+                        .filter(opt => opt.length > 0);
+        
+                    if (typeOptionsArray.length > 0) {
+                        // 传入 isThread 和 threadLength
+                        const result = await showSaveDialog(mainTweetData.name, typeOptionsArray, isThread, threadLength);
+        
+                        if (result === null) {
+                            showStatus("Save cancelled.", "error");
+                            return;
+                        }
+        
+                        selectedTypes = result.types;
+                        finalTitle = result.title;
+                        shouldSaveThread = result.saveThread;
+                        shouldSaveComments = result.saveComments; // 获取新复选框的状态
+                    }
                 }
-                
-                selectedTypes = result.types;
-                finalTitle = result.title;
-                shouldSaveThread = result.saveThread;
-            }
-        }
         
-        console.log('Save options selected:', { finalTitle, selectedTypes, shouldSaveThread });
-
-        // 3. 根据选择，决定发送什么 action
-        let action;
-        let payload;
-
-        if (shouldSaveThread && isThread) {
-            // 保存整个 Thread
-            showStatus(`Extracting full thread (${threadLength} tweets)...`, "success");
-            
-            // 确认保存 Thread，才去抓取完整数据
-            const fullThreadData = await chrome.tabs.sendMessage(tab.id, { action: "getFullThreadData" });
-            
-            if (!fullThreadData || fullThreadData.length === 0) {
-                 showStatus("Failed to extract full thread data.", "error");
-                 return;
-            }
-            
-            action = "saveThreadToNotion";
-            payload = {
-                thread: fullThreadData,
-                title: finalTitle,
-                types: selectedTypes,
-                notionApiKey: notionApiKey,
-                databaseId: databaseId
-            };
-            
-        } else {
-            // 只保存单条推文
-            action = "saveToNotion";
-            mainTweetData.name = finalTitle;
-            mainTweetData.type = selectedTypes;
-            payload = {
-                tweet: mainTweetData,
-                notionApiKey: notionApiKey,
-                databaseId: databaseId
-            };
-        }
-
-        // 4. 发送到 background.js 保存
+                console.log('Save options selected:', { finalTitle, selectedTypes, shouldSaveThread, shouldSaveComments });
+        
+                // 3. 根据选择，决定发送什么 action
+                let action;
+                let payload;
+        
+                if (shouldSaveThread && isThread) {
+                    // 保存整个 Thread
+                    showStatus(`Extracting full thread (${threadLength} tweets)...`, "success");
+        
+                    // 确认保存 Thread，才去抓取完整数据
+                    const fullThreadData = await chrome.tabs.sendMessage(tab.id, { action: "getFullThreadData" });
+        
+                    if (!fullThreadData || fullThreadData.length === 0) {
+                        showStatus("Failed to extract full thread data.", "error");
+                        return;
+                    }
+        
+                    action = "saveThreadToNotion";
+                    payload = {
+                        thread: fullThreadData,
+                        title: finalTitle,
+                        types: selectedTypes,
+                        notionApiKey: notionApiKey,
+                        databaseId: databaseId
+                    };
+        
+                } else {
+                    // 只保存单条推文
+                    action = "saveToNotion";
+                    mainTweetData.name = finalTitle;
+                    mainTweetData.type = selectedTypes;
+                    payload = {
+                        tweet: mainTweetData,
+                        notionApiKey: notionApiKey,
+                        databaseId: databaseId
+                    };
+                }
+        
+                        // 新增：如果需要保存评论，则抓取并添加到 payload
+                        if (shouldSaveComments) {
+                            showStatus("Extracting comments...", "success");
+                            let comments = await chrome.tabs.sendMessage(tab.id, { action: "extractCommentsAndChains" });
+                            
+                            // 去重逻辑：如果同时保存thread和comments，则从comments中移除thread已包含的部分
+                            if (shouldSaveThread && payload.thread && comments) {
+                                const threadUrls = new Set(payload.thread.map(t => t.url));
+                                const originalCommentCount = comments.length;
+                                comments = comments.filter(c => !threadUrls.has(c.url));
+                                console.log(`去重：从 ${originalCommentCount} 条评论中移除了 ${originalCommentCount - comments.length} 条重复的Thread推文`);
+                            }
+                
+                            if (comments && comments.length > 0) {
+                                payload.comments = comments;
+                                console.log(`添加了 ${comments.length} 条评论到保存数据中`);
+                            } else {
+                                console.log('未找到或未能提取评论');
+                            }
+                        }        
+                // 4. 发送到 background.js 保存
         showStatus("Saving to Notion...", "success");
         chrome.runtime.sendMessage({ action, ...payload }, (response) => {
             console.log('Save response:', response);
@@ -649,6 +671,15 @@ function showSaveDialog(defaultTitle, typeOptions, isThread = false, threadLengt
             `;
         }
 
+        let commentsCheckboxHTML = `
+            <div style="margin: 10px 0; padding: 8px; background: #f0f3f4; border-radius: 6px;">
+                <label style="display: flex; align-items: center; cursor: pointer; font-size: 13px;">
+                    <input type="checkbox" id="saveCommentsCheckbox" style="width: 16px; height: 16px; margin-right: 8px;">
+                    <strong>Save comments</strong>
+                </label>
+            </div>
+        `;
+
         selectionDiv.innerHTML = `
             <div style="style="margin: 8px 0px;padding: 0px 20px;background: #f8fafc;"; border-radius: 8px;">
                 <div class="block align-out">
@@ -662,6 +693,7 @@ function showSaveDialog(defaultTitle, typeOptions, isThread = false, threadLengt
                 </div>
 
                 ${threadCheckboxHTML}
+                ${commentsCheckboxHTML}
 
                 <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px; margin-top: 10px;">
                     <div style="flex: 0 0 auto;">
@@ -751,13 +783,15 @@ function showSaveDialog(defaultTitle, typeOptions, isThread = false, threadLengt
             
             // 获取复选框状态
             const saveThread = document.getElementById('saveThreadCheckbox')?.checked || false;
+            const saveComments = document.getElementById('saveCommentsCheckbox')?.checked || false;
             
             selectionDiv.remove();
             
             resolve({
                 title: editedTitle || defaultTitle,
                 types: selectedTypes,
-                saveThread: saveThread // 返回新增的值
+                saveThread: saveThread, // 返回新增的值
+                saveComments: saveComments // 返回评论复选框的值
             });
         };
         
