@@ -521,6 +521,11 @@ async function saveCurrentTweet() {
         
         showStatus("Saving to Notion...", "success");
         chrome.runtime.sendMessage({ action, ...payload }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.warn("Error receiving response (popup likely closed):", chrome.runtime.lastError.message);
+                return; // The popup was closed before we could respond.
+            }
+            
             console.log('Save response:', response);
             if (response && response.success) {
                 const saveSuccessDiv = document.getElementById('saveSuccess');

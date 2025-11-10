@@ -950,6 +950,10 @@ function initializeContentScript() {
 
 // 修改：原有的消息监听器，增加 Thread 相关 action
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "ping") {
+        sendResponse({ status: "pong" });
+        return true;
+    }
     if (request.action === "getTweetContext") {
         // 新增：Popup 打开时请求上下文
         const context = getTweetContext();

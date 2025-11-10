@@ -1,4 +1,44 @@
 // background.js - 完整重构版 (支持 Thread)
+
+// ==================== Content Script Liveness ====================
+async function reviveContentScriptsInTab(tab) {
+    try {
+        // Send a ping and wait for a response.
+        const response = await chrome.tabs.sendMessage(tab.id, { action: "ping" });
+        if (response?.status !== 'pong') {
+            throw new Error("Invalid pong response");
+        }
+    } catch (e) {
+        // If it errors, the content script is not there or not responding.
+        console.log(`Content script in tab ${tab.id} is not responding. Injecting...`);
+        try {
+            await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                files: ['content.js'],
+            });
+            console.log(`Successfully injected content script into tab ${tab.id}.`);
+        } catch (injectionError) {
+            console.error(`Failed to inject script into tab ${tab.id}:`, injectionError);
+        }
+    }
+}
+
+async function reviveAllContentScripts() {
+    try {
+        const tabs = await chrome.tabs.query({ url: ["https://twitter.com/*", "https://x.com/*"] });
+        for (const tab of tabs) {
+            // Using a setTimeout to avoid potential race conditions on startup
+            setTimeout(() => reviveContentScriptsInTab(tab), 100);
+        }
+    } catch (e) {
+        console.error("Error reviving content scripts:", e);
+    }
+}
+
+// Run on startup and when the service worker wakes up
+reviveAllContentScripts();
+
+
 console.log('Twitter to Notion background script loaded');
 
 // ==================== 消息监听器 ====================
@@ -47,8 +87,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ==================== 扩展安装事件 ====================
-chrome.runtime.onInstalled.addListener(() => {
-  console.log('Twitter to Notion extension installed');
+chrome.runtime.onInstalled.addListener((details) => {
+  console.log('Twitter to Notion extension installed/updated:', details.reason);
+  reviveAllContentScripts();
 });
 
 // ==================== 工具函数 ====================
