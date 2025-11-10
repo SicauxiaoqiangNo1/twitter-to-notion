@@ -1,4 +1,45 @@
 // popup.js - 完整重构版 (支持 Thread 保存)
+
+function debounce(func, wait) {
+    let timeout;
+    return function(...args) {
+        const context = this;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(context, args), wait);
+    };
+}
+
+// New function for auto-validation
+async function handleAutoValidation() {
+    const apiKey = document.getElementById("notionApiKey").value.trim();
+    const dbId = document.getElementById("databaseId").value.trim();
+    const apiKeyStatus = document.getElementById("apiKeyStatus");
+    const dbIdStatus = document.getElementById("dbIdStatus");
+
+    // Reset status if fields are empty
+    if (!apiKey) {
+        apiKeyStatus.className = 'validation-status';
+        return;
+    }
+    if (!dbId) {
+        dbIdStatus.className = 'validation-status';
+        return;
+    }
+
+    apiKeyStatus.className = 'validation-status loading';
+    dbIdStatus.className = 'validation-status loading';
+
+    const isValid = await validateConfiguration(apiKey, dbId);
+
+    if (isValid) {
+        apiKeyStatus.className = 'validation-status valid';
+        dbIdStatus.className = 'validation-status valid';
+    } else {
+        apiKeyStatus.className = 'validation-status invalid';
+        dbIdStatus.className = 'validation-status invalid';
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     console.log('Popup loaded');
     
@@ -13,16 +54,23 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // 设置配置状态栏点击事件
     setupConfigStatusClickHandler();
+
+    // Auto-validation listeners
+    const debouncedValidation = debounce(handleAutoValidation, 500);
+    document.getElementById("notionApiKey").addEventListener("input", debouncedValidation);
+    document.getElementById("databaseId").addEventListener("input", debouncedValidation);
 });
 
 function loadConfiguration() {
-    // 仅加载 notionApiKey / databaseId / typeOptions
-    chrome.storage.local.get(["notionApiKey", "databaseId", "typeOptions"], (data) => {
+    // 仅加载 notionApiKey / databaseId / typeOptions / defaultSaveThread / defaultSaveComments
+    chrome.storage.local.get(["notionApiKey", "databaseId", "typeOptions", "defaultSaveThread", "defaultSaveComments"], (data) => {
         console.log('Loaded config from storage:', {
             hasApiKey: !!data.notionApiKey,
             hasDatabaseId: !!data.databaseId,
             hasTypeOptions: !!data.typeOptions,
-            typeOptionsValue: data.typeOptions
+            typeOptionsValue: data.typeOptions,
+            defaultSaveThread: data.defaultSaveThread,
+            defaultSaveComments: data.defaultSaveComments
         });
 
         if (data.notionApiKey) {
@@ -36,6 +84,16 @@ function loadConfiguration() {
             console.log('Loaded typeOptions:', data.typeOptions);
         } else {
             console.log('No typeOptions found in storage');
+        }
+
+        // 设置默认保存选项的复选框状态
+        const defaultSaveThreadCheckbox = document.getElementById("defaultSaveThread");
+        if (defaultSaveThreadCheckbox) {
+            defaultSaveThreadCheckbox.checked = data.defaultSaveThread !== undefined ? data.defaultSaveThread : true; // 默认勾选
+        }
+        const defaultSaveCommentsCheckbox = document.getElementById("defaultSaveComments");
+        if (defaultSaveCommentsCheckbox) {
+            defaultSaveCommentsCheckbox.checked = data.defaultSaveComments !== undefined ? data.defaultSaveComments : false; // 默认不勾选
         }
 
         // 更新按钮状态
@@ -202,10 +260,6 @@ function setupConfigStatusClickHandler() {
                         updateConfigStatusDisplay(data.notionApiKey, data.databaseId, false);
                         showStatus("❌ Configuration validation failed: " + error.message, "error");
                     });
-            } else {
-                // 配置错误
-                updateConfigStatusDisplay(data.notionApiKey, data.databaseId, false);
-                showStatus("❌ Please configure plugin first", "error");
             }
         });
     });
@@ -215,11 +269,15 @@ function saveConfiguration() {
     const notionApiKey = document.getElementById("notionApiKey").value.trim();
     const databaseId = document.getElementById("databaseId").value.trim();
     const typeOptions = document.getElementById("typeOptions").value.trim();
+    const defaultSaveThread = document.getElementById("defaultSaveThread")?.checked || false;
+    const defaultSaveComments = document.getElementById("defaultSaveComments")?.checked || false;
 
     console.log('Saving configuration:', {
         notionApiKey: notionApiKey ? '***' : 'empty',
         databaseId: databaseId || 'empty',
-        typeOptions: typeOptions || 'empty'
+        typeOptions: typeOptions || 'empty',
+        defaultSaveThread: defaultSaveThread,
+        defaultSaveComments: defaultSaveComments
     });
 
     if (!notionApiKey) {
@@ -232,51 +290,42 @@ function saveConfiguration() {
         return;
     }
 
-    // 存储配置（仅存储 API Key / Database ID / typeOptions）
+    // 存储配置
     chrome.storage.local.set({ 
         notionApiKey: notionApiKey, 
         databaseId: databaseId,
-        typeOptions: typeOptions // 存储原始文本
+        typeOptions: typeOptions, // 存储原始文本
+        defaultSaveThread: defaultSaveThread,
+        defaultSaveComments: defaultSaveComments
     }, () => {
         // 验证配置是否保存成功
-        chrome.storage.local.get(["notionApiKey", "databaseId", "typeOptions"], (data) => {
+        chrome.storage.local.get(["notionApiKey", "databaseId", "typeOptions", "defaultSaveThread", "defaultSaveComments"], (data) => {
             console.log('Verified storage after save:', {
                 notionApiKey: data.notionApiKey ? '***' : 'missing',
                 databaseId: data.databaseId || 'missing',
-                typeOptions: data.typeOptions || 'missing'
+                typeOptions: data.typeOptions || 'missing',
+                defaultSaveThread: data.defaultSaveThread,
+                defaultSaveComments: data.defaultSaveComments
             });
             
             if (data.notionApiKey && data.databaseId) {
                 showStatus("Configuration saved successfully!", "success");
                 updateUIState(data.notionApiKey, data.databaseId);
                 
-                                        // 异步同步到Notion数据库（不阻塞UI）
-                
-                                        if (data.typeOptions) {
-                
-                                            syncDatabaseOptions(data.notionApiKey, data.databaseId, data.typeOptions)
-                
-                                                .then(() => {
-                
-                                                    showStatus(`Configuration saved and ${data.typeOptions.split(' ').filter(opt => opt.trim()).length} categories synced to Notion!`, "success");
-                
-                                                })
-                
-                                                .catch(error => {
-                
-                                                    console.warn('Database sync failed:', error);
-                
-                                                    showStatus("Configuration saved, but failed to sync categories to Notion: " + error.message, "error");
-                
-                                                    // 同步失败，配置可能无效
-                
-                                                    updateConfigStatusDisplay(data.notionApiKey, data.databaseId, false);
-                
-                                                });
-                
-                                        }            } else {
+                // 异步同步到Notion数据库（不阻塞UI）
+                if (data.typeOptions) {
+                    syncDatabaseOptions(data.notionApiKey, data.databaseId, data.typeOptions)
+                        .then(() => {
+                            showStatus(`Configuration saved and ${data.typeOptions.split(' ').filter(opt => opt.trim()).length} categories synced to Notion!`, "success");
+                        })
+                        .catch(error => {
+                            console.warn('Database sync failed:', error);
+                            showStatus("Configuration saved, but failed to sync categories to Notion: " + error.message, "error");
+                            updateConfigStatusDisplay(data.notionApiKey, data.databaseId, false);
+                        });
+                }
+            } else {
                 showStatus("Failed to save configuration.", "error");
-                // 即使保存失败也要更新状态显示
                 updateConfigStatusDisplay(data.notionApiKey, data.databaseId);
             }
         });
@@ -366,23 +415,23 @@ function editConfiguration() {
  * (重构为支持 Thread 检测)
  */
 async function saveCurrentTweet() {
-    const { notionApiKey, databaseId, typeOptions } = await chrome.storage.local.get(["notionApiKey", "databaseId", "typeOptions"]);
+    const { notionApiKey, databaseId, typeOptions, defaultSaveThread, defaultSaveComments } = await chrome.storage.local.get(["notionApiKey", "databaseId", "typeOptions", "defaultSaveThread", "defaultSaveComments"]);
     
     console.log('Current storage for save:', {
         notionApiKey: notionApiKey ? '***' : 'missing',
         databaseId: databaseId || 'missing',
-        typeOptions: typeOptions || 'missing'
+        typeOptions: typeOptions || 'missing',
+        defaultSaveThread,
+        defaultSaveComments
     });
     
     if (!notionApiKey || !databaseId) {
         showStatus("Please save your Notion configuration first.", "error");
+        editConfiguration(); // Automatically switch to config view
         return;
     }
 
-    // 获取当前标签页
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    console.log('Current tab:', tab);
-    
     if (!tab.url.includes('twitter.com') && !tab.url.includes('x.com')) {
         showStatus("Please navigate to a Twitter page first.", "error");
         return;
@@ -391,7 +440,6 @@ async function saveCurrentTweet() {
     try {
         showStatus("Analyzing tweet context...", "success");
         
-        // 1. 请求上下文，而不是完整数据
         const context = await chrome.tabs.sendMessage(tab.id, { action: "getTweetContext" });
         console.log('Tweet context received:', context);
         
@@ -400,142 +448,103 @@ async function saveCurrentTweet() {
             return;
         }
 
-        const { isThread, threadLength, mainTweetData } = context;
+        const { isThread, threadLength, hasComments, mainTweetData } = context;
 
-                // 2. 显示对话框
-                let selectedTypes = [];
-                let finalTitle = mainTweetData.name;
-                let shouldSaveThread = false;
-                let shouldSaveComments = false;
+        // Show the dialog to allow user to edit title and select types
+        const result = await showSaveDialog(
+            mainTweetData.name,
+            typeOptions ? typeOptions.split(' ').map(opt => opt.trim()).filter(opt => opt.length > 0) : []
+        );
+
+        // If user cancelled the dialog
+        if (result === null) {
+            showStatus("Save cancelled.", "error");
+            return;
+        }
+
+        const { title: finalTitle, types: selectedTypes } = result;
         
-                if (typeOptions) {
-                    const typeOptionsArray = typeOptions.split(' ')
-                        .map(opt => opt.trim())
-                        .filter(opt => opt.length > 0);
+        // Use global settings for shouldSaveThread and shouldSaveComments
+        const shouldSaveThread = defaultSaveThread !== undefined ? defaultSaveThread : true;
+        const shouldSaveComments = defaultSaveComments !== undefined ? defaultSaveComments : false;
+
+        console.log('Save options confirmed:', { finalTitle, selectedTypes, shouldSaveThread, shouldSaveComments });
+
+        let action;
+        let payload;
+
+        if (shouldSaveThread && isThread) {
+            showStatus(`Extracting full thread (${threadLength} tweets)...`, "success");
+            const fullThreadData = await chrome.tabs.sendMessage(tab.id, { action: "getFullThreadData" });
+
+            if (!fullThreadData || fullThreadData.length === 0) {
+                showStatus("Failed to extract full thread data.", "error");
+                return;
+            }
+            action = "saveThreadToNotion";
+            payload = {
+                thread: fullThreadData,
+                title: finalTitle,
+                types: selectedTypes,
+                notionApiKey,
+                databaseId
+            };
+        } else {
+            action = "saveToNotion";
+            mainTweetData.name = finalTitle;
+            mainTweetData.type = selectedTypes;
+            payload = {
+                tweet: mainTweetData,
+                notionApiKey,
+                databaseId
+            };
+        }
+
+        if (shouldSaveComments && hasComments) {
+            showStatus("Extracting comments...", "success");
+            let comments = await chrome.tabs.sendMessage(tab.id, { action: "extractCommentsAndChains" });
+            
+            if (shouldSaveThread && payload.thread && comments) {
+                const threadUrls = new Set(payload.thread.map(t => t.url));
+                const originalCommentCount = comments.length;
+                comments = comments.filter(c => !threadUrls.has(c.url));
+                console.log(`Deduplication: Removed ${originalCommentCount - comments.length} thread tweets from comments.`);
+            }
+
+            if (comments && comments.length > 0) {
+                payload.comments = comments;
+                console.log(`Added ${comments.length} comments to the payload.`);
+            } else {
+                console.log('No comments found or extracted.');
+            }
+        }
         
-                    if (typeOptionsArray.length > 0) {
-                        // 传入 isThread 和 threadLength
-                        const result = await showSaveDialog(mainTweetData.name, typeOptionsArray, isThread, threadLength);
-        
-                        if (result === null) {
-                            showStatus("Save cancelled.", "error");
-                            return;
-                        }
-        
-                        selectedTypes = result.types;
-                        finalTitle = result.title;
-                        shouldSaveThread = result.saveThread;
-                        shouldSaveComments = result.saveComments; // 获取新复选框的状态
-                    }
-                }
-        
-                console.log('Save options selected:', { finalTitle, selectedTypes, shouldSaveThread, shouldSaveComments });
-        
-                // 3. 根据选择，决定发送什么 action
-                let action;
-                let payload;
-        
-                if (shouldSaveThread && isThread) {
-                    // 保存整个 Thread
-                    showStatus(`Extracting full thread (${threadLength} tweets)...`, "success");
-        
-                    // 确认保存 Thread，才去抓取完整数据
-                    const fullThreadData = await chrome.tabs.sendMessage(tab.id, { action: "getFullThreadData" });
-        
-                    if (!fullThreadData || fullThreadData.length === 0) {
-                        showStatus("Failed to extract full thread data.", "error");
-                        return;
-                    }
-        
-                    action = "saveThreadToNotion";
-                    payload = {
-                        thread: fullThreadData,
-                        title: finalTitle,
-                        types: selectedTypes,
-                        notionApiKey: notionApiKey,
-                        databaseId: databaseId
-                    };
-        
-                } else {
-                    // 只保存单条推文
-                    action = "saveToNotion";
-                    mainTweetData.name = finalTitle;
-                    mainTweetData.type = selectedTypes;
-                    payload = {
-                        tweet: mainTweetData,
-                        notionApiKey: notionApiKey,
-                        databaseId: databaseId
-                    };
-                }
-        
-                        // 新增：如果需要保存评论，则抓取并添加到 payload
-                        if (shouldSaveComments) {
-                            showStatus("Extracting comments...", "success");
-                            let comments = await chrome.tabs.sendMessage(tab.id, { action: "extractCommentsAndChains" });
-                            
-                            // 去重逻辑：如果同时保存thread和comments，则从comments中移除thread已包含的部分
-                            if (shouldSaveThread && payload.thread && comments) {
-                                const threadUrls = new Set(payload.thread.map(t => t.url));
-                                const originalCommentCount = comments.length;
-                                comments = comments.filter(c => !threadUrls.has(c.url));
-                                console.log(`去重：从 ${originalCommentCount} 条评论中移除了 ${originalCommentCount - comments.length} 条重复的Thread推文`);
-                            }
-                
-                            if (comments && comments.length > 0) {
-                                payload.comments = comments;
-                                console.log(`添加了 ${comments.length} 条评论到保存数据中`);
-                            } else {
-                                console.log('未找到或未能提取评论');
-                            }
-                        }        
-                // 4. 发送到 background.js 保存
         showStatus("Saving to Notion...", "success");
         chrome.runtime.sendMessage({ action, ...payload }, (response) => {
             console.log('Save response:', response);
             if (response && response.success) {
-                // 显示保存成功界面
                 const saveSuccessDiv = document.getElementById('saveSuccess');
                 const statusMessageDiv = document.getElementById('statusMessage');
                 const configStatusSection = document.getElementById('configStatusSection');
-                const mainSection = document.getElementById('mainSection');
                 
-                if (saveSuccessDiv && mainSection) {
-                    // 确保主界面是可见的
-                    mainSection.style.display = 'block';
-                    
-                    // 移除状态消息
-                    if (statusMessageDiv) {
-                        statusMessageDiv.remove();
-                    }
-                    
-                    // 显示保存成功界面
+                if (saveSuccessDiv) {
+                    if (statusMessageDiv) statusMessageDiv.remove();
                     saveSuccessDiv.style.display = 'block';
+                    if (configStatusSection) configStatusSection.style.display = 'none';
                     
-                    // 在显示保存成功时隐藏整个配置状态区域
-                    if (configStatusSection) {
-                        configStatusSection.style.display = 'none';
-                    }
-                    
-                    // 设置打开按钮的事件处理
                     const pageUrl = response.data?.pageUrl;
-                    console.log('Page URL:', pageUrl);
                     if (pageUrl) {
                         const openInNotionBtn = document.getElementById('openInNotion');
                         if (openInNotionBtn) {
-                            // 移除之前的事件监听器
                             openInNotionBtn.replaceWith(openInNotionBtn.cloneNode(true));
-                            const newOpenBtn = document.getElementById('openInNotion');
-                            newOpenBtn.addEventListener('click', () => {
-                                console.log('Opening page:', pageUrl);
+                            document.getElementById('openInNotion').addEventListener('click', () => {
                                 chrome.tabs.create({ url: pageUrl });
                             });
                         }
-                    } else {
-                        console.warn('No page URL in response:', response);
                     }
                 }
             } else {
-                showStatus("❌ Failed to save tweet to Notion: " + (response?.error || 'Unknown error'), "error");
+                showStatus("❌ Failed to save to Notion: " + (response?.error || 'Unknown error'), "error");
             }
         });
 
@@ -637,11 +646,12 @@ function showStatus(message, type) {
     statusDiv.className = `status ${type}`;
     statusDiv.style.display = 'block';
     
-    // 插入到主内容区域
-    const mainContent = document.getElementById('mainContent');
-    if (mainContent) {
-        mainContent.appendChild(statusDiv);
+    // 插入到消息内容区域
+    const messageContainer = document.getElementById('messageContainer');
+    if (messageContainer) {
+        messageContainer.appendChild(statusDiv);
     } else {
+        // Fallback if messageContainer is not found (shouldn't happen if HTML is correct)
         document.querySelector('.container').appendChild(statusDiv);
     }
     
@@ -663,83 +673,57 @@ function showStatus(message, type) {
 /**
  * 修改：showSaveDialog，添加 Thread 复选框
  */
-function showSaveDialog(defaultTitle, typeOptions, isThread = false, threadLength = 1) {
+function showSaveDialog(defaultTitle, typeOptions) {
     return new Promise((resolve) => {
         // 创建对话框界面
         const selectionDiv = document.createElement('div');
         selectionDiv.id = 'saveDialog';
 
-        // 新增：Thread 复选框的 HTML
-        let threadCheckboxHTML = '';
-        if (isThread) {
-            threadCheckboxHTML = `
-                <div style="margin: 10px 0; padding: 8px; background: #f0f3f4; border-radius: 6px;">
-                    <label style="display: flex; align-items: center; cursor: pointer; font-size: 13px;">
-                        <input type="checkbox" id="saveThreadCheckbox" checked style="width: 16px; height: 16px; margin-right: 8px;">
-                        <strong>Save entire thread (${threadLength} tweets)</strong>
-                    </label>
-                </div>
-            `;
-        }
-
-        let commentsCheckboxHTML = `
-            <div style="margin: 10px 0; padding: 8px; background: #f0f3f4; border-radius: 6px;">
-                <label style="display: flex; align-items: center; cursor: pointer; font-size: 13px;">
-                    <input type="checkbox" id="saveCommentsCheckbox" style="width: 16px; height: 16px; margin-right: 8px;">
-                    <strong>Save comments</strong>
-                </label>
-            </div>
-        `;
-
         selectionDiv.innerHTML = `
-            <div style="style="margin: 8px 0px;padding: 0px 20px;background: #f8fafc;"; border-radius: 8px;">
-                <div class="block align-out">
-                  <label class="card-title">编辑标题</label>
-                  <textarea id="editTitle"
-                    style="width: 100%; box-sizing: border-box; min-height: 80px; padding: var(--v-pad) var(--h-pad); border: 1px solid #cfd9de;
-                        border-radius: 6px; font-size: 14px; line-height: 1.5; resize: vertical;
-                        background-color: #fff; font-family: inherit; outline: none;"
-                    onfocus="this.style.borderColor='#1da1f2'"
-                    onblur="this.style.borderColor='#cfd9de'">${defaultTitle}</textarea>
-                </div>
-
-                ${threadCheckboxHTML}
-                ${commentsCheckboxHTML}
-
-                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px; margin-top: 10px;">
-                    <div style="flex: 0 0 auto;">
-                        <button id="confirmSave" style="padding: 8px 12px; background: #2563eb; color: white; 
-                                                   border: none; border-radius: 8px; cursor: pointer; font-weight: 600;
-                                                   font-size: 13px; transition: all 0.15s; height: 36px; box-shadow: 0 2px 6px rgba(37,99,235,0.12);"
-                                onmouseover="this.style.background='#1d4ed8'"
-                                onmouseout="this.style.background='#2563eb'">
-                            保存到 Notion
-                        </button>
-                    </div>
-
-                    <div id="selectedTags" style="flex: 1 1 auto; min-height: 36px; padding: 6px 10px; 
-                         border: 1px solid #eef2ff; border-radius: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; background: linear-gradient(180deg,#ffffff,#fbfdff);">
-                        <div style="color: #94a3b8; font-size: 12px;" id="selectedTagsPlaceholder">尚未选择标签</div>
-                    </div>
-                </div>
-
-                <div class="block align-out">
-                  <label class="card-title">选择标签</label>
-                  <div id="tagOptions" class="card tight" style="max-height: 200px; overflow-y: auto;">
-                    <div id="typeCheckboxes" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;">
-                        ${typeOptions.map((opt, index) => `
-                            <label style="display: flex; align-items: center; cursor: pointer; padding: 2px 4px; 
-                                       font-size: 12px; white-space: nowrap; overflow: hidden;">
-                                <input type="checkbox" value="${opt}" id="type${index}" 
-                                       style="margin-right: 6px; width: 14px; height: 14px;">
-                                <span style="overflow: hidden; text-overflow: ellipsis;">${opt}</span>
-                            </label>
-                        `).join('')}
-                    </div>
-                  </div>
-                </div>
-            </div>
-        `;
+                        <div class="card" style="margin: 8px 0px;">
+                            <div class="block align-out">
+                              <label class="card-title">编辑标题</label>
+                              <textarea id="editTitle"
+                                style="width: 100%; box-sizing: border-box; min-height: 80px; padding: var(--v-pad) var(--h-pad); border: 1px solid #cfd9de;
+                                    border-radius: 6px; font-size: 14px; line-height: 1.5; resize: vertical;
+                                    background-color: #fff; font-family: inherit; outline: none;"
+                                onfocus="this.style.borderColor='#1da1f2'"
+                                onblur="this.style.borderColor='#cfd9de'">${defaultTitle}</textarea>
+                            </div>
+            
+                            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px; margin-top: 10px;">
+                                <div style="flex: 0 0 auto;">
+                                    <button id="confirmSave" style="padding: 8px 12px; background: #2563eb; color: white;
+                                                               border: none; border-radius: 8px; cursor: pointer; font-weight: 600;
+                                                               font-size: 13px; transition: all 0.15s; height: 36px; box-shadow: 0 2px 6px rgba(37,99,235,0.12);"
+                                            onmouseover="this.style.background='#1d4ed8'"
+                                            onmouseout="this.style.background='#2563eb'">
+                                        保存到 Notion
+                                    </button>
+                                </div>
+            
+                                <div id="selectedTags" style="flex: 1 1 auto; min-height: 36px; padding: 6px 10px;
+                                     border: 1px solid #eef2ff; border-radius: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; background: linear-gradient(180deg,#ffffff,#fbfdff);">
+                                    <div style="color: #94a3b8; font-size: 12px;" id="selectedTagsPlaceholder">尚未选择标签</div>
+                                </div>
+                            </div>
+            
+                            <div class="block align-out">
+                              <label class="card-title">选择标签</label>
+                              <div id="tagOptions" class="card tight" style="max-height: 200px; overflow-y: auto;">
+                                <div id="typeCheckboxes" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;">
+                                    ${typeOptions.map((opt, index) => `
+                                        <label style="display: flex; align-items: center; cursor: pointer; padding: 2px 4px;
+                                                   font-size: 12px; white-space: nowrap; overflow: hidden;">
+                                            <input type="checkbox" value="${opt}" id="type${index}"
+                                                   style="margin-right: 6px; width: 14px; height: 14px;">
+                                            <span style="overflow: hidden; text-overflow: ellipsis;">${opt}</span>
+                                        </label>
+                                    `).join('')}
+                                </div>
+                              </div>
+                            </div>
+                        </div>        `;
         
         // 插入到主内容区域
         const mainContent = document.getElementById('mainContent');
@@ -792,49 +776,21 @@ function showSaveDialog(defaultTitle, typeOptions, isThread = false, threadLengt
                 .map(checkbox => checkbox.value);
             const editedTitle = document.getElementById('editTitle').value.trim();
             
-            // 获取复-选框状态
-            const saveThread = document.getElementById('saveThreadCheckbox')?.checked || false;
-            const saveComments = document.getElementById('saveCommentsCheckbox')?.checked || false;
-            
             selectionDiv.remove();
             
             resolve({
                 title: editedTitle || defaultTitle,
-                types: selectedTypes,
-                saveThread: saveThread, // 返回新增的值
-                saveComments: saveComments // 返回评论复选框的值
+                types: selectedTypes
             });
         };
         
         // 点击对话框外部关闭
         document.addEventListener('click', (e) => {
-            if (!selectionDiv.contains(e.target)) {
-                selectionDiv.remove();
+            const dialog = document.getElementById('saveDialog');
+            if (dialog && !dialog.contains(e.target)) {
+                dialog.remove();
                 resolve(null);
             }
         });
-
-        // 为标题文本框添加自动调整高度功能
-        const titleTextarea = document.getElementById('editTitle');
-        if (titleTextarea) {
-            // 初始调整高度
-            const adjustHeight = () => {
-                titleTextarea.style.height = 'auto';
-                titleTextarea.style.height = Math.min(titleTextarea.scrollHeight, 120) + 'px';
-            };
-            
-            // 输入时自动调整高度
-            titleTextarea.addEventListener('input', adjustHeight);
-            
-            // 初始化时调整一次高度
-            setTimeout(adjustHeight, 0);
-            
-            // Ctrl+Enter 提交
-            titleTextarea.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' && e.ctrlKey) {
-                    document.getElementById('confirmSave').click();
-                }
-            });
-        }
     });
 }

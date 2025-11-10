@@ -313,6 +313,32 @@
     }
 
 
+    .validation-status {
+        position: absolute;
+        right: 10px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 16px;
+    }
+
+    .validation-status.loading::after {
+        content: '⏳'; /* or a spinner icon */
+        animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+
+    .validation-status.valid::after {
+        content: '✅';
+    }
+
+    .validation-status.invalid::after {
+        content: '❌';
+    }
+
     /* 在配置页面隐藏编辑按钮 */
     #configSection:not([style*="display: none"]) ~ #configStatusSection #editConfigBtn {
       display: none !important;
@@ -326,12 +352,18 @@
     <div id="configSection">
       <div class="input-group">
         <label for="notionApiKey" class="card-title">Notion API Key</label>
-        <input type="password" id="notionApiKey" placeholder="Enter your Notion API Key">
+        <div style="position: relative; display: flex; align-items: center;">
+          <input type="password" id="notionApiKey" placeholder="Enter your Notion API Key" style="width: 100%; padding-right: 30px;">
+          <span id="apiKeyStatus" class="validation-status"></span>
+        </div>
       </div>
       
       <div class="input-group">
         <label for="databaseId" class="card-title">Database ID</label>
-        <input type="text" id="databaseId" placeholder="Enter your Database ID">
+        <div style="position: relative; display: flex; align-items: center;">
+          <input type="text" id="databaseId" placeholder="Enter your Database ID" style="width: 100%; padding-right: 30px;">
+          <span id="dbIdStatus" class="validation-status"></span>
+        </div>
       </div>
       
       <!-- Type 输入框现在在配置区域内 -->
@@ -347,6 +379,18 @@
         </small>
       </div>
       
+      <div class="input-group" style="margin-top: 16px;">
+        <label class="card-title">Default Save Options</label>
+        <label style="display: flex; align-items: center; font-size: 13px; margin-bottom: 8px;">
+          <input type="checkbox" id="defaultSaveThread" style="margin-right: 8px; width: 16px; height: 16px;">
+          Threads
+        </label>
+        <label style="display: flex; align-items: center; font-size: 13px;">
+          <input type="checkbox" id="defaultSaveComments" style="margin-right: 8px; width: 16px; height: 16px;">
+          Comments
+        </label>
+      </div>
+
       <div style="margin-top: 16px;">
         <button id="saveConfigBtn" class="btn-primary" style="width: 45%; padding: 8px; font-size: 13px; font-weight: 600;">Save Configuration</button>
       </div>
@@ -374,8 +418,10 @@
           </button>
         </div>
         <!-- 状态消息区域 -->
-        <div id="statusMessage" class="status"></div>
+        <!-- This will be moved to messageContainer -->
+        <!-- <div id="statusMessage" class="status"></div> -->
       </div>
+      <div id="messageContainer"></div> <!-- New container for status messages -->
     </div>
     
     <!-- 配置状态 -->

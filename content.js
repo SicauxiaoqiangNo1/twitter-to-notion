@@ -593,11 +593,15 @@ function getTweetContext() {
         const mainTweetElement = allTweetElements[startIndex];
         const mainAuthorHandle = extractAuthorHandle(mainTweetElement);
         
+        // 新增：判断是否存在评论（页面上推文数量 > 1）
+        const hasComments = allTweetElements.length > 1;
+
         if (!mainAuthorHandle) {
              // 无法识别作者，可能在非推文页，仅返回单条
              return {
                 isThread: false,
                 threadLength: 1,
+                hasComments: hasComments,
                 mainTweetData: extractTweetData(mainTweetElement)
              };
         }
@@ -621,12 +625,13 @@ function getTweetContext() {
         return {
             isThread: threadLength > 1,
             threadLength: threadLength,
+            hasComments: hasComments,
             mainTweetData: mainTweetData
         };
 
     } catch (error) {
         console.error('Error getting tweet context:', error);
-        return { isThread: false, threadLength: 1, mainTweetData: extractTweetData() };
+        return { isThread: false, threadLength: 1, hasComments: false, mainTweetData: extractTweetData() };
     }
 }
 
@@ -809,6 +814,138 @@ function extractTimestamp(tweetElement) {
 }
 
 
+// ==================== 核心逻辑 (SPA, Debounce, Page-Type) ====================
+
+let lastUrl = location.href;
+
+/**
+ * Debounce function to limit how often a function gets called.
+ * @param {Function} func The function to debounce.
+ * @param {number} delay The delay in milliseconds.
+ * @returns {Function} The debounced function.
+ */
+function debounce(func, delay) {
+    let timeout;
+    return function(...args) {
+        const context = this;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(context, args), delay);
+    };
+}
+
+/**
+ * 处理 DOM 变化的函数 (经过 debounce 处理)
+ */
+const handleDomChanges = debounce((mutations) => {
+    for (const mutation of mutations) {
+        if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+            for (const node of mutation.addedNodes) {
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    // 检查节点本身是否是推文
+                    if (node.matches('article[data-testid="tweet"]')) {
+                        console.log("[content.js] New tweet detected:", node);
+                        // 未来可以在这里添加处理逻辑，如 injectButton(node)
+                    }
+                    // 检查节点内部是否有推文
+                    node.querySelectorAll('article[data-testid="tweet"]').forEach(tweetNode => {
+                        // 避免重复记录
+                        if (!tweetNode.dataset.tweetDetected) {
+                            console.log("[content.js] New tweet detected (in subtree):", tweetNode);
+                            tweetNode.dataset.tweetDetected = 'true';
+                        }
+                    });
+                }
+            }
+        }
+    }
+}, 300); // 300ms 延迟，避免频繁触发
+
+/**
+ * 当页面加载或 URL 变化时运行的函数
+ */
+function onPageLoadOrUrlChange() {
+    console.log("[content.js] URL changed or page loaded:", location.href);
+    lastUrl = location.href;
+
+    // 区分页面类型
+    const pathname = location.pathname;
+    if (pathname === '/home') {
+        console.log('[content.js] Page type: Home Feed');
+    } else if (pathname.includes('/status/')) {
+        console.log('[content.js] Page type: Tweet Detail (Status)');
+    } else if (pathname.startsWith('/') && pathname.split('/').length === 2 && !['home', 'explore', 'notifications', 'messages'].includes(pathname.slice(1))) {
+        console.log('[content.js] Page type: User Profile');
+    } else {
+        console.log('[content.js] Page type: Other');
+    }
+
+    // 重新初始化 MutationObserver 以监听新页面的 DOM 变化
+    initializeMutationObserver();
+}
+
+/**
+ * 初始化 MutationObserver，用于检测新推文（滚动加载）
+ */
+function initializeMutationObserver() {
+    // 如果已存在 observer，先断开连接，避免重复监听
+    if (window.tweetObserver) {
+        window.tweetObserver.disconnect();
+        console.log("[content.js] Disconnected existing MutationObserver.");
+    }
+
+    const observer = new MutationObserver(handleDomChanges);
+
+    // 监听主内容区域的变化，比监听整个 body 更高效
+    const mainContentArea = document.querySelector('main');
+    if (mainContentArea) {
+        observer.observe(mainContentArea, { childList: true, subtree: true });
+        console.log("[content.js] MutationObserver started on <main> element.");
+    } else {
+        console.warn("[content.js] Could not find <main> element to observe. Falling back to <body>.");
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // 将 observer 实例存放在 window 对象上，方便管理
+    window.tweetObserver = observer;
+}
+
+/**
+ * 初始化脚本，设置所有事件监听器
+ */
+function initializeContentScript() {
+    // 监听浏览器的前进/后退操作
+    window.addEventListener('popstate', () => {
+        if (location.href !== lastUrl) {
+            onPageLoadOrUrlChange();
+        }
+    });
+
+    // 通过劫持 history API 来监听 SPA 内部的路由跳转
+    const originalPushState = history.pushState;
+    history.pushState = function() {
+        originalPushState.apply(this, arguments);
+        window.dispatchEvent(new Event('urlchange'));
+    };
+
+    const originalReplaceState = history.replaceState;
+    history.replaceState = function() {
+        originalReplaceState.apply(this, arguments);
+        window.dispatchEvent(new Event('urlchange'));
+    };
+
+    // 监听自定义的 urlchange 事件
+    window.addEventListener('urlchange', () => {
+        if (location.href !== lastUrl) {
+            onPageLoadOrUrlChange();
+        }
+    });
+
+    console.log("[content.js] Initialized and listening for all URL changes.");
+    
+    // 首次加载时运行
+    onPageLoadOrUrlChange();
+}
+
 // ==================== 消息与事件处理 ====================
 
 // 修改：原有的消息监听器，增加 Thread 相关 action
@@ -834,7 +971,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
  * @returns {Array<Object|Array<Object>>} 一个混合数组，包含独立的评论对象和对话链数组
  */
 function extractCommentsAndChains() {
-    console.log('开始提取评论和对话链 (V4 - 用户指定逻辑)');
+    console.log('开始提取评论和对话链 (V6 - 新筛选逻辑)');
     const results = [];
     const allTweetElements = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
 
@@ -842,45 +979,75 @@ function extractCommentsAndChains() {
         return [];
     }
 
+    // 获取主博主 handle
+    const mainAuthorHandle = extractAuthorHandle(allTweetElements[0]);
+
+    // 跳过主推文和广告
     let startIndex = 0;
     while (startIndex < allTweetElements.length && (isAdTweet(allTweetElements[startIndex]) || startIndex === 0)) {
         startIndex++;
     }
 
-    // 预处理所有评论，获取数据和分隔符状态
-    const allComments = allTweetElements.slice(startIndex).map(el => {
+    // 1. 预处理所有评论，获取所需信息，但不进行最终过滤
+    const allCommentsProcessed = allTweetElements.slice(startIndex).map(el => {
         if (isAdTweet(el)) return null;
+        
+        const tweetData = extractTweetData(el);
+        if (!tweetData) return null;
+        
         return {
-            data: extractTweetData(el),
+            tweetData: tweetData,
+            isMainAuthor: tweetData.metadata.authorHandle === mainAuthorHandle,
             hasSeparator: el.querySelector('div.css-175oi2r.r-1bimlpy.r-f8sm7e.r-m5arl1.r-16y2uox.r-14gqq1x') !== null
         };
-    }).filter(Boolean); // 过滤掉广告
+    }).filter(Boolean);
 
+    // 2. 识别对话链
+    const itemsWithChainInfo = [];
     let i = 0;
-    while (i < allComments.length) {
-        const currentComment = allComments[i];
+    while (i < allCommentsProcessed.length) {
+        const currentComment = allCommentsProcessed[i];
 
-        // 规则 3: 如果当前评论有分隔符，它与下一个评论组成一个链
         if (currentComment.hasSeparator) {
-            const currentChain = [currentComment.data];
+            const currentChain = [currentComment]; // Keep the full object for now
             let j = i + 1;
-
-            // 规则 4: 只要链中的前一个元素有分隔符，就继续添加下一个元素
-            while (j < allComments.length && allComments[j - 1].hasSeparator) {
-                currentChain.push(allComments[j].data);
+            while (j < allCommentsProcessed.length && allCommentsProcessed[j - 1].hasSeparator) {
+                currentChain.push(allCommentsProcessed[j]);
                 j++;
             }
-            
-            console.log(`📦 打包一个对话链，从评论 ${i} 开始，共 ${currentChain.length} 条`);
-            results.push(currentChain);
-            i = j; // 跳过已处理的链
+            itemsWithChainInfo.push({ isChain: true, data: currentChain });
+            i = j;
         } else {
-            // 规则 2: 如果当前评论没有分隔符，它是独立的
-            console.log(`📝 添加一个独立评论 (索引 ${i})`);
-            results.push(currentComment.data);
+            itemsWithChainInfo.push({ isChain: false, data: currentComment });
             i++;
         }
     }
+
+    // 3. 应用新的过滤规则并构建最终结果
+    itemsWithChainInfo.forEach(item => {
+        if (item.isChain) {
+            // 规则2: 属于对话链内的内容均保存
+            const chainData = item.data.map(c => c.tweetData); // Extract just the tweetData
+            results.push(chainData);
+            console.log(`📦 保留一个对话链 (共 ${chainData.length} 条)`);
+        } else {
+            // 是独立评论
+            const comment = item.data;
+            if (comment.isMainAuthor) {
+                // 规则2: 是博主本人...的内容均保存
+                results.push(comment.tweetData);
+                console.log(`📝 保留一条博主本人的评论`);
+            } else {
+                // 规则1: 非博主本人的且字符长度小于10的不保存
+                if (comment.tweetData.fullContent.trim().length >= 10) {
+                    results.push(comment.tweetData);
+                    console.log(`📝 保留一条独立评论 (长度: ${comment.tweetData.fullContent.trim().length})`);
+                } else {
+                    console.log(`❌ 丢弃一条独立评论 (长度: ${comment.tweetData.fullContent.trim().length}, 小于10)`);
+                }
+            }
+        }
+    });
 
     console.log(`=== 对话链提取完成 === 共找到 ${results.length} 个项目（独立评论或对话链）`);
     const chainCount = results.filter(item => Array.isArray(item)).length;
@@ -890,31 +1057,6 @@ function extractCommentsAndChains() {
     return results;
 }
 
-// 移除 Twitter 界面的保存按钮相关代码
-// 保留 extractTweetData 函数用于 popup 界面的数据提取
 
-// 启动
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-        // 移除 Twitter 界面的保存按钮相关代码
-        // 保留 DOM 监听器用于其他功能
-        const observer = new MutationObserver(() => {
-            // 可以在这里添加其他需要的 DOM 监听功能
-        });
-        
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
-    });
-} else {
-    // 可以在这里添加其他需要的 DOM 监听功能
-    const observer = new MutationObserver(() => {
-        // 可以在这里添加其他需要的 DOM 监听功能
-    });
-    
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true
-    });
-}
+// ==================== 启动入口 ====================
+initializeContentScript();
