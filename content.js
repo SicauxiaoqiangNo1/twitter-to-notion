@@ -535,17 +535,29 @@ function isElementBold(element) {
 }
 
 /**
+ * 隐藏广告推文
+ * @param {Element} tweetElement
+ */
+function hideAdTweet(tweetElement) {
+    if (tweetElement && tweetElement.style) {
+        tweetElement.style.display = 'none';
+        console.log('隐藏广告推文:', tweetElement);
+    }
+}
+
+/**
  * 新增：检查一个推文元素是否是广告
  * @param {Element} tweetElement
  * @returns {boolean}
  */
 function isAdTweet(tweetElement) {
     if (!tweetElement) return false;
-    // 查找所有span元素并检查文本内容是否为 "Ad"
+    // 查找所有span元素并检查文本内容是否为 "Ad" 或 "Promoted" (不区分大小写)
     const adSpans = tweetElement.querySelectorAll('span');
     for (const span of adSpans) {
-        if (span.textContent.trim() === 'Ad') {
-            console.log('发现广告推文，将跳过:', tweetElement);
+        const text = span.textContent.trim();
+        if (text.toLowerCase() === 'ad' || text.toLowerCase() === 'promoted') {
+            console.log('发现广告推文（通过文本识别），将跳过:', tweetElement);
             return true;
         }
     }
@@ -844,7 +856,9 @@ const handleDomChanges = debounce((mutations) => {
                     // 检查节点本身是否是推文
                     if (node.matches('article[data-testid="tweet"]')) {
                         console.log("[content.js] New tweet detected:", node);
-                        // 未来可以在这里添加处理逻辑，如 injectButton(node)
+                        if (isAdTweet(node)) {
+                            hideAdTweet(node);
+                        }
                     }
                     // 检查节点内部是否有推文
                     node.querySelectorAll('article[data-testid="tweet"]').forEach(tweetNode => {
@@ -852,6 +866,9 @@ const handleDomChanges = debounce((mutations) => {
                         if (!tweetNode.dataset.tweetDetected) {
                             console.log("[content.js] New tweet detected (in subtree):", tweetNode);
                             tweetNode.dataset.tweetDetected = 'true';
+                            if (isAdTweet(tweetNode)) {
+                                hideAdTweet(tweetNode);
+                            }
                         }
                     });
                 }
@@ -878,6 +895,13 @@ function onPageLoadOrUrlChange() {
     } else {
         console.log('[content.js] Page type: Other');
     }
+
+    // 过滤页面上已存在的广告推文
+    document.querySelectorAll('article[data-testid="tweet"]').forEach(tweetElement => {
+        if (isAdTweet(tweetElement)) {
+            hideAdTweet(tweetElement);
+        }
+    });
 
     // 重新初始化 MutationObserver 以监听新页面的 DOM 变化
     initializeMutationObserver();
