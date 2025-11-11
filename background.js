@@ -378,6 +378,58 @@ function buildCommentsAndChainsSection(items, mainAuthorHandle) {
 }
 
 
+async function queryDatabase(tweetUrl, apiKey, databaseId) {
+  console.log('Querying database for URL:', tweetUrl);
+  console.log('Using API Key:', apiKey ? 'Exists' : 'Missing');
+  console.log('Using Database ID:', databaseId);
+
+  if (!apiKey || !databaseId) {
+    throw new Error("Notion API Key or Database ID not configured.");
+  }
+
+  const cleanDatabaseId = databaseId.replace(/-/g, '');
+  const notionUrl = `https://api.notion.com/v1/databases/${cleanDatabaseId}/query`;
+
+  const headers = {
+    "Authorization": `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28"
+  };
+
+  const data = {
+    filter: {
+      property: "URL",
+      url: {
+        equals: tweetUrl
+      }
+    }
+  };
+
+  console.log('Sending query to Notion API with data:', JSON.stringify(data, null, 2));
+
+  const response = await fetch(notionUrl, {
+    method: "POST",
+    headers: headers,
+    body: JSON.stringify(data)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Notion API error (queryDatabase):', response.status, errorText);
+    throw new Error(`Notion API error: ${response.status} - ${errorText}`);
+  }
+
+  const result = await response.json();
+  console.log('Received query result from Notion API:', result);
+
+  if (result.results.length > 0) {
+    console.log('Tweet already exists in Notion:', result.results[0]);
+    return result.results[0];
+  }
+
+  return null;
+}
+
 // ==================== 主要功能函数 ====================
 /**
  * 修改：原 saveToNotion 函数，使用重构的 Buidler
@@ -385,6 +437,11 @@ function buildCommentsAndChainsSection(items, mainAuthorHandle) {
 async function saveToNotion(tweet, apiKey, databaseId, comments = []) {
   console.log('Starting saveToNotion with content blocks:', tweet.contentBlocks?.length);
   console.log('Comments received:', comments?.length || 0);
+
+  const existingPage = await queryDatabase(tweet.url, apiKey, databaseId);
+  if (existingPage) {
+    throw new Error("该推文已存在于Notion中，请勿重复保存。");
+  }
 
   const cleanDatabaseId = databaseId.replace(/-/g, '');
   const notionUrl = "https://api.notion.com/v1/pages";
@@ -405,9 +462,7 @@ async function saveToNotion(tweet, apiKey, databaseId, comments = []) {
   const data = {
     parent: { database_id: cleanDatabaseId },
     properties: {
-      "Name": {
-        title: [{ text: { content: truncateText(tweet.name, 100) || "Twitter Post" } }]
-      },
+      "Name": { title: [{ text: { content: truncateText(tweet.name, 100) || "Twitter Post" } }] },
       "URL": { url: tweet.url },
       "Type": { multi_select: typeMultiSelect },
       "Sender": {
@@ -485,6 +540,7 @@ async function saveThreadToNotion(thread, title, types, apiKey, databaseId, comm
   }
 
   const firstTweet = thread[0]; // 使用第一条推文作为 Page 的元数据
+
   const cleanDatabaseId = databaseId.replace(/-/g, '');
   const notionUrl = "https://api.notion.com/v1/pages";
   

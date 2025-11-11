@@ -131,7 +131,7 @@ function updateUIState(apiKey, databaseId) {
     const configSection = document.getElementById("configSection");
     const mainSection = document.getElementById("mainSection");
     const configStatusSection = document.getElementById("configStatusSection");
-    const configStatusBar = document.getElementById("configStatusBar");
+    const configStatusBar = document = document.getElementById("configStatusBar");
     const container = document.querySelector('.container');
 
     if (apiKey && databaseId) {
@@ -549,7 +549,11 @@ async function saveCurrentTweet() {
                     }
                 }
             } else {
-                showStatus("❌ Failed to save to Notion: " + (response?.error || 'Unknown error'), "error");
+                if (response?.error === "该推文已存在于Notion中，请勿重复保存。") {
+                    showStatus("该推文已存在于Notion中，请勿重复保存。", "error");
+                } else {
+                    showStatus("❌ Failed to save to Notion: " + (response?.error || 'Unknown error'), "error");
+                }
             }
         });
 
