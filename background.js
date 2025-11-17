@@ -541,6 +541,12 @@ async function saveThreadToNotion(thread, title, types, apiKey, databaseId, comm
 
   const firstTweet = thread[0]; // 使用第一条推文作为 Page 的元数据
 
+  // 新增：检查推文串是否已存在
+  const existingPage = await queryDatabase(firstTweet.url, apiKey, databaseId);
+  if (existingPage) {
+    throw new Error("该推文串已存在于Notion中，请勿重复保存。");
+  }
+
   const cleanDatabaseId = databaseId.replace(/-/g, '');
   const notionUrl = "https://api.notion.com/v1/pages";
   
